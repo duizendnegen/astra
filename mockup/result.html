@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Astra - Phoenix</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&amp;family=Manrope:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">tailwind.config = {darkMode: "class", theme: {extend: {colors: {"inverse-primary": "#50616b", "tertiary-container": "#dcc66e", "surface-dim": "#0c1324", surface: "#0c1324", "tertiary-fixed": "#f9e287", "surface-tint": "#b7c9d5", "on-secondary": "#293045", "on-error": "#690005", "primary-fixed": "#d3e5f1", primary: "#d3e5f1", "surface-bright": "#32394c", "on-tertiary-fixed": "#221b00", "error-container": "#93000a", "on-tertiary-container": "#615200", "on-primary": "#22333c", background: "#0c1324", "primary-fixed-dim": "#b7c9d5", error: "#ffb4ab", "surface-container": "#181f31", "on-secondary-fixed-variant": "#3f465c", outline: "#8d9195", "on-tertiary-fixed-variant": "#544600", "on-primary-container": "#44555f", "on-error-container": "#ffdad6", "on-tertiary": "#3a3000", "surface-container-highest": "#2e3447", "inverse-on-surface": "#293042", "secondary-fixed": "#dbe2fd", "secondary-fixed-dim": "#bfc6e0", "on-secondary-fixed": "#141b2f", "on-primary-fixed-variant": "#384953", "surface-container-high": "#232a3c", "secondary-container": "#3f465c", "on-background": "#dce2fa", "primary-container": "#b7c9d5", "surface-container-lowest": "#070e1e", "on-primary-fixed": "#0c1e26", "tertiary-fixed-dim": "#dcc66e", "inverse-surface": "#dce2fa", secondary: "#bfc6e0", "surface-variant": "#2e3447", "surface-container-low": "#141b2c", "outline-variant": "#43474b", "on-surface-variant": "#c3c7cb", "on-secondary-container": "#aeb4cf", "on-surface": "#dce2fa", tertiary: "#f9e287"}, fontFamily: {headline: ["Space Grotesk"], body: ["Manrope"], label: ["Space Grotesk"], display: "Space Grotesk"}, borderRadius: {DEFAULT: "1rem", lg: "2rem", xl: "3rem", full: "9999px"}}}};</script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+        }
+        .star-field {
+            background-image: 
+                radial-gradient(1px 1px at 20px 30px, #e1e2e7 100%, transparent),
+                radial-gradient(1px 1px at 40px 70px, #8f9095 100%, transparent),
+                radial-gradient(2px 2px at 50px 160px, #a7c8ff 100%, transparent),
+                radial-gradient(1px 1px at 90px 40px, #c6c6c7 100%, transparent),
+                radial-gradient(1.5px 1.5px at 130px 80px, #e1e2e7 100%, transparent);
+            background-repeat: repeat;
+            background-size: 200px 200px;
+        }
+        .glow-line {
+            filter: drop-shadow(0 0 4px #a7c8ff);
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body selection:bg-secondary/30">
+<!-- Top Navigation Bar (Shared Component) -->
+<!-- Suppression Logic: Navigation is suppressed during focused/transactional moments like "Drawing" -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-12 py-6 bg-[#111417]/0 pointer-events-none">
+<div class="font-headline text-2xl tracking-[0.2em] text-[#c6c6c7] opacity-20 transition-opacity">ASTRA</div>
+<div class="flex items-center gap-6 pointer-events-auto">
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+</button>
+</div>
+</header>
+<!-- Celestial Canvas Area -->
+<main class="relative min-h-screen w-full overflow-hidden flex items-center justify-center bg-surface-container-lowest">
+<!-- Deep Space Background Layers -->
+<div class="absolute inset-0 star-field opacity-30"></div>
+<div class="absolute inset-0 bg-gradient-to-tr from-surface-container-lowest via-transparent to-surface-container-low opacity-60"></div>
+<!-- Central Ethereal Overlay -->
+<div class="relative z-10 text-center pointer-events-none select-none">
+<h1 class="font-headline italic text-7xl md:text-9xl tracking-[0.15em] text-primary/10 transition-all duration-1000">
+                Phoenix
+            </h1>
+<div class="mt-8 flex flex-col items-center gap-2">
+<p class="font-label text-xs uppercase tracking-[0.4em] text-secondary/40">Manifesting Starlight</p>
+<div class="w-24 h-[1px] bg-gradient-to-r from-transparent via-secondary/20 to-transparent mt-4"></div>
+</div>
+</div>
+<!-- Drawing Visualization (SVG Constellation) -->
+<div class="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+<svg class="w-full h-full max-w-4xl max-h-[819px] opacity-80" fill="none" viewbox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+<!-- Constellation "Points of Light" -->
+<circle class="animate-pulse" cx="400" cy="150" fill="#c6c6c7" r="2.5" style="animation-duration: 3s;"></circle> <!-- Head -->
+<circle cx="300" cy="300" fill="#a7c8ff" r="2"></circle> <!-- Wing L -->
+<circle cx="500" cy="300" fill="#a7c8ff" r="2"></circle> <!-- Wing R -->
+<circle cx="400" cy="450" fill="#8f9095" r="1.5"></circle> <!-- Tail -->
+<circle cx="200" cy="250" fill="#a7c8ff" r="1.5"></circle> <!-- Wing Tip L -->
+<circle cx="600" cy="250" fill="#a7c8ff" r="1.5"></circle> <!-- Wing Tip R -->
+<!-- Connection Lines with Subtle Glow -->
+<g class="glow-line opacity-40">
+<!-- Head to Wing L -->
+<line stroke="#a7c8ff" stroke-width="0.75" x1="400" x2="300" y1="150" y2="300"></line>
+<!-- Head to Wing R -->
+<line stroke="#a7c8ff" stroke-width="0.75" x1="400" x2="500" y1="150" y2="300"></line>
+<!-- Wing L to Wing Tip L -->
+<line stroke="#a7c8ff" stroke-width="0.75" x1="300" x2="200" y1="300" y2="250"></line>
+<!-- Wing R to Wing Tip R -->
+<line stroke="#a7c8ff" stroke-width="0.75" x1="500" x2="600" y1="300" y2="250"></line>
+<!-- Body to Tail -->
+<line stroke="#a7c8ff" stroke-dasharray="4 8" stroke-width="0.75" x1="400" x2="400" y1="150" y2="450"></line>
+<!-- Connecting wings -->
+<line opacity="0.5" stroke="#a7c8ff" stroke-width="0.5" x1="300" x2="500" y1="300" y2="300"></line>
+</g>
+</svg>
+</div>
+<!-- Ambient Metadata (Side Elements) -->
+<div class="fixed left-12 top-1/2 -translate-y-1/2 flex flex-col gap-16">
+<div class="space-y-4">
+<span class="block font-label text-[10px] text-outline tracking-widest uppercase">Declination</span>
+<span class="block font-label text-sm text-secondary">+42° 14' 5.2"</span>
+</div>
+<div class="space-y-4">
+<span class="block font-label text-[10px] text-outline tracking-widest uppercase">Right Ascension</span>
+<span class="block font-label text-sm text-secondary">0h 25m 43s</span>
+</div>
+</div>
+<div class="fixed right-12 bottom-12 flex flex-col items-end gap-6">
+<div class="w-px h-24 bg-gradient-to-b from-transparent via-outline/20 to-secondary/40"></div>
+</div>
+<!-- Floating Action Interaction Zone (Minimalist) -->
+<div class="fixed bottom-16 left-1/2 -translate-x-1/2 z-40">
+<!-- Actions -->
+<div class="mt-16 flex flex-col md:flex-row gap-8 items-center">
+<!-- Share Button -->
+<button class="group relative px-10 py-4 rounded-full bg-tertiary text-on-tertiary font-label tracking-[0.2em] uppercase text-xs overflow-hidden transition-all duration-500 active:scale-95 shadow-[0_0_30px_rgba(249,226,135,0.3)]">
+<span class="relative z-10 flex items-center gap-3">
+<span class="material-symbols-outlined text-lg" data-icon="ios_share">ios_share</span>
+                        Share Link
+                    </span>
+<div class="absolute inset-0 bg-gradient-to-r from-primary to-secondary opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+</button>
+<!-- Export Button -->
+<button class="group flex items-center gap-3 px-10 py-4 rounded-full border border-outline-variant/30 text-on-surface font-label text-xs tracking-widest uppercase hover:bg-surface-container-high transition-all active:scale-95">
+<span class="material-symbols-outlined text-lg text-secondary" data-icon="download">download</span>
+                    Export PNG
+                </button>
+</div>
+</div>
+</main>
+<!-- Signature Background Decoration -->
+<div class="fixed inset-0 pointer-events-none z-0">
+<!-- Nebula Glows -->
+<div class="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-secondary/5 blur-[120px] rounded-full"></div>
+<div class="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-tertiary/5 blur-[100px] rounded-full"></div>
+</div>
+</body></html>
