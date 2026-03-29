@@ -33,9 +33,9 @@ The system SHALL animate `constellationAlpha` from 0 to 1 during the final 40% o
 - **WHEN** the camera animation completes
 - **THEN** `constellationAlpha` is 1 and all constellation visuals are rendered at their normal full opacity
 
-#### Scenario: Return transition unaffected
+#### Scenario: Overlays fade out during return transition
 - **WHEN** the camera animates back to the landing state
-- **THEN** constellation visuals disappear immediately (as `setConstellation(null)` is called before the return animation) and the zoom-out proceeds unchanged
+- **THEN** `constellationAlpha` animates from 1 to 0 over the full return transition, causing IAU constellation lines and named star labels to fade out smoothly; custom constellation visuals (cleared by `setConstellation(null)` before the return begins) are already absent
 
 ### Requirement: Regenerate re-runs matching on a new patch
 The system SHALL provide a secondary Regenerate action that re-runs the star matching algorithm on a different sky patch without re-querying the LLM, then animates the camera to the new patch centre.

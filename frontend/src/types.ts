@@ -39,3 +39,26 @@ export const LANDING_CAMERA: CameraState = {
 };
 
 export const RESULT_FOV = 25;
+
+// ── Overlay types ─────────────────────────────────────────────────────────
+
+export interface ConstellationLineBbox {
+  minRA: number;
+  maxRA: number;
+  minDec: number;
+  maxDec: number;
+  wraps: boolean;
+}
+
+export interface ConstellationLines {
+  name: string;
+  bbox: ConstellationLineBbox;
+  lines: [number, number][]; // flat pairs: [ra,dec],[ra,dec],... each consecutive pair is one segment
+}
+
+export interface NamedStar {
+  name: string;
+  ra: number;   // degrees
+  dec: number;  // degrees
+  mag: number;
+}

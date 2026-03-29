@@ -1,9 +1,11 @@
-import { loadCatalogue, getCatalogue } from './catalogue';
-import { init, resize, setConstellation, animateToResult, animateToLanding } from './renderer';
+import { loadCatalogue, getCatalogue, loadConstellationLines } from './catalogue';
+import { init, resize, setConstellation, animateToResult, animateToLanding, setOverlayData } from './renderer';
 import { match } from './matcher';
 import { buildShareUrl, copyToClipboard, decode } from './share';
 import { exportPng } from './export';
 import { formatDec, formatRA } from './coords';
+import { getFeatures } from './features';
+import { NAMED_STARS } from './named-stars';
 import type { ConstellationState } from './types';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
@@ -118,9 +120,15 @@ window.addEventListener('resize', resize);
 async function boot(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const encoded = params.get('c');
+  const features = getFeatures(params);
 
-  const catalogue = await loadCatalogue();
+  const [catalogue, constellationLines] = await Promise.all([
+    loadCatalogue(),
+    features.showLines ? loadConstellationLines() : Promise.resolve([]),
+  ]);
+
   init(canvas, catalogue);
+  setOverlayData(features, constellationLines, NAMED_STARS);
   catalogueStatus.textContent = '';
   findBtn.disabled = false;
 

@@ -11,12 +11,16 @@ out/
 .env
 .env.local
 .env.*.local
+.claude/settings.local.json
 
 # Data / large files
 data/
 *.csv
 *.json.gz
 .playwright-mcp/
+
+# Test harness reports (fixtures are committed; generated reports are not)
+test-harness/reports/
 
 # OS
 .DS_Store

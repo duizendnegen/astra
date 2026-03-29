@@ -1,6 +1,7 @@
 import * as d3 from 'd3';
-import type { Star, CameraState, MatchResult } from './types';
+import type { Star, CameraState, MatchResult, ConstellationLines, NamedStar } from './types';
 import { LANDING_CAMERA, RESULT_FOV } from './types';
+import type { Features } from './features';
 
 const STAR_LINE_COLOR = '#a7c8ff';
 const BG_STAR_MAX_RADIUS = 2.2;
@@ -15,6 +16,9 @@ let camera: CameraState = { ...LANDING_CAMERA };
 let stars: Star[] = [];
 let constellation: MatchResult | null = null;
 let constellationAlpha: number = 1;
+let features: Features = { showLines: false, showStars: false };
+let constellationLines: ConstellationLines[] = [];
+let namedStars: NamedStar[] = [];
 
 // ── Projection helpers ────────────────────────────────────────────────────
 
@@ -152,11 +156,83 @@ function drawConstellation(): void {
   }
 }
 
+export function fovBbox(): { minRA: number; maxRA: number; minDec: number; maxDec: number } {
+  const halfFov = camera.fov / 2;
+  return {
+    minRA: camera.ra - halfFov / Math.cos((camera.dec * Math.PI) / 180),
+    maxRA: camera.ra + halfFov / Math.cos((camera.dec * Math.PI) / 180),
+    minDec: camera.dec - halfFov,
+    maxDec: camera.dec + halfFov,
+  };
+}
+
+export function bboxIntersects(
+  bbox: ConstellationLines['bbox'],
+  fov: ReturnType<typeof fovBbox>,
+): boolean {
+  if (bbox.minDec > fov.maxDec || bbox.maxDec < fov.minDec) return false;
+  if (bbox.wraps) {
+    // constellation straddles RA=0: it covers [minRA, 360] ∪ [0, maxRA]
+    return fov.maxRA >= bbox.minRA || fov.minRA <= bbox.maxRA;
+  }
+  return bbox.minRA <= fov.maxRA && bbox.maxRA >= fov.minRA;
+}
+
+function drawIAULines(): void {
+  if (!features.showLines || constellationLines.length === 0) return;
+  let fov: ReturnType<typeof fovBbox>;
+  if (constellation) {
+    const halfFov = RESULT_FOV / 2;
+    const cosDec = Math.cos((constellation.patchDec * Math.PI) / 180);
+    fov = {
+      minRA: constellation.patchRA - halfFov / cosDec,
+      maxRA: constellation.patchRA + halfFov / cosDec,
+      minDec: constellation.patchDec - halfFov,
+      maxDec: constellation.patchDec + halfFov,
+    };
+  } else {
+    fov = fovBbox();
+  }
+  ctx.strokeStyle = '#8899aa';
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.25 * constellationAlpha;
+  for (const entry of constellationLines) {
+    if (!bboxIntersects(entry.bbox, fov)) continue;
+    const pts = entry.lines;
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      const a = project(pts[i][0], pts[i][1]);
+      const b = project(pts[i + 1][0], pts[i + 1][1]);
+      if (!a || !b) continue;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawNamedStars(): void {
+  if (!features.showStars || namedStars.length === 0) return;
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#ccd9ff';
+  ctx.globalAlpha = 0.85 * constellationAlpha;
+  for (const star of namedStars) {
+    const pt = project(star.ra, star.dec);
+    if (!pt) continue;
+    if (pt[0] < 0 || pt[0] > canvas.width || pt[1] < 0 || pt[1] > canvas.height) continue;
+    ctx.fillText(star.name, pt[0] + 6, pt[1] - 4);
+  }
+  ctx.globalAlpha = 1;
+}
+
 export function draw(): void {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#0c1324';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawStars();
+  drawIAULines();
+  drawNamedStars();
   drawConstellation();
 }
 
@@ -174,6 +250,7 @@ export function animateTo(
   durationMs: number,
   onComplete?: () => void,
   fadeStart: number = 0,
+  fadeOut: boolean = false,
 ): void {
   if (animFrame !== null) cancelAnimationFrame(animFrame);
 
@@ -191,7 +268,7 @@ export function animateTo(
       fov: start.fov + (target.fov - start.fov) * e,
     };
 
-    constellationAlpha = computeConstellationAlpha(e, fadeStart);
+    constellationAlpha = fadeOut ? 1 - e : computeConstellationAlpha(e, fadeStart);
 
     projection = buildProjection();
     draw();
@@ -200,7 +277,7 @@ export function animateTo(
       animFrame = requestAnimationFrame(step);
     } else {
       camera = { ...target };
-      constellationAlpha = 1;
+      constellationAlpha = fadeOut ? 0 : 1;
       animFrame = null;
       onComplete?.();
     }
@@ -233,6 +310,12 @@ export function setConstellation(result: MatchResult | null): void {
   constellation = result;
 }
 
+export function setOverlayData(f: Features, lines: ConstellationLines[], named: NamedStar[]): void {
+  features = f;
+  constellationLines = lines;
+  namedStars = named;
+}
+
 export function getCamera(): CameraState { return { ...camera }; }
 
 export function resetCamera(): void {
@@ -247,7 +330,7 @@ export function animateToResult(patchRA: number, patchDec: number, onComplete?: 
 }
 
 export function animateToLanding(): void {
-  animateTo(LANDING_CAMERA, 1500);
+  animateTo(LANDING_CAMERA, 1500, undefined, 0, true);
 }
 
 export function getCanvas(): HTMLCanvasElement { return canvas; }

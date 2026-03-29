@@ -1,7 +1,7 @@
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Constellation stars selected per skeleton vertex
-The system SHALL select up to `MAX_CONSTELLATION_STARS` (8) stars from the on-pattern matched set to form `constellationStars`. For each skeleton vertex, the best unclaimed matched star SHALL be selected by composite score `d_eff + BRIGHTNESS_WEIGHT * (mag / MAX_MAG)`, where lower score is better. Degree-1 (endpoint) vertices SHALL be processed before degree-2+ (joint) vertices.
+The system SHALL select up to `maxConstellationStars` stars (from `ResolvedConfig`) from the on-pattern matched set to form `constellationStars`. The composite score SHALL be `d_vtx + brightnessWeight * (mag / MAX_MAG)`, where `brightnessWeight` comes from `ResolvedConfig`. Degree-1 (endpoint) vertices SHALL be processed before degree-2+ (joint) vertices. All constants used in selection SHALL come from `ResolvedConfig`, not from module-level globals.
 
 #### Scenario: Endpoint vertices filled first
 - **WHEN** the skeleton has both endpoint and joint vertices
@@ -11,23 +11,23 @@ The system SHALL select up to `MAX_CONSTELLATION_STARS` (8) stars from the on-pa
 - **WHEN** a star has been claimed by one vertex
 - **THEN** it is not available for selection by any subsequent vertex
 
-#### Scenario: Cap at eight stars
-- **WHEN** the skeleton has more than 8 vertices
-- **THEN** at most 8 stars are included in `constellationStars`, with endpoint vertices prioritised
+#### Scenario: maxConstellationStars override respected
+- **WHEN** `match()` is called with `{ model: 'vertex', maxConstellationStars: 5 }`
+- **THEN** at most 5 stars appear in `constellationStars`
+
+#### Scenario: brightnessWeight override respected
+- **WHEN** `match()` is called with `{ model: 'spread', brightnessWeight: 0.0 }`
+- **THEN** vertex star selection is based purely on geometric distance with no brightness preference
 
 ### Requirement: Brightness weighting in vertex star selection
-A star's selection score SHALL be `d_eff + BRIGHTNESS_WEIGHT * (mag / MAX_MAG)` where `BRIGHTNESS_WEIGHT = 0.3` and `MAX_MAG = 6.0`. Among matched stars near a vertex, a significantly brighter star at slightly greater effective distance MAY score better than a dimmer star at minimum distance.
+`brightnessWeight` and `MAX_MAG` SHALL be read from `ResolvedConfig`. Their effect on selection is unchanged: a significantly brighter star at slightly greater distance may score better than a dimmer star at minimum distance.
 
 #### Scenario: Bright star preferred over dim star at same proximity
-- **WHEN** two matched stars are near the same vertex with similar effective distances
-- **THEN** the brighter star (lower magnitude) receives the lower composite score and is selected
-
-#### Scenario: Very distant bright star does not displace proximate dim star
-- **WHEN** a bright star is far outside the effective distance range for a vertex
-- **THEN** the closer dim star is selected (proximity dominates at large distance differences)
+- **WHEN** two matched stars are near the same vertex with similar distances
+- **THEN** the brighter star receives the lower composite score and is selected
 
 ### Requirement: Edge fallback for unmatched vertices
-If no matched star is within `DISTANCE_THRESHOLD` of a vertex's position, the system SHALL consider all matched stars on the vertex's adjacent edges as candidates for that vertex's slot.
+If no matched star is within `distanceThreshold` of a vertex's position, the system SHALL consider all matched stars on the vertex's adjacent edges as candidates. This requirement is unchanged across all models.
 
 #### Scenario: Vertex with no nearby star uses edge candidates
 - **WHEN** no matched star falls within threshold of a vertex

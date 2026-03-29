@@ -1,21 +1,65 @@
 import type { Star, Skeleton, MatchResult } from './types';
 
-const SEED_MAX_MAG = 3;
-const PATCH_RADIUS_DEG = 10;
-const MAX_PATCH_RADIUS_DEG = 15;
-const PATCH_RADIUS_STEP = 2.5;
-const QUALITY_THRESHOLD = 0.80;
-const COVERAGE_THRESHOLD = 0.60;
-const MIN_MATCHED_STARS = 6;
-const ROTATION_STEPS = 12; // test every 30°
-const DISTANCE_THRESHOLD = 0.10; // normalised unit space
-const VERTEX_BONUS_ENDPOINT = 0.6;
-const VERTEX_BONUS_JOINT = 0.1;
-const VERTEX_SIGMA = 0.08;
-const ORION_SPAN_DEG = 25;
-const BRIGHTNESS_WEIGHT = 0.3;
-const MAX_MAG = 6.0;
-const MAX_CONSTELLATION_STARS = 8;
+// ── Public config types ───────────────────────────────────────────────────
+
+export type ModelName = 'simple' | 'vertex' | 'spread';
+
+/** Pass as the optional fourth argument to match() to select a model and/or
+ *  override individual constants. All fields except `model` are optional —
+ *  omitted fields fall back to the named model's defaults. */
+export interface MatcherConfig {
+  model: ModelName;
+  // Search strategy
+  seedMaxMag?: number;
+  patchRadius?: number;
+  maxPatchRadius?: number;
+  patchRadiusStep?: number;
+  qualityThreshold?: number;
+  coverageThreshold?: number;
+  minMatchedStars?: number;
+  rotationSteps?: number;
+  skeletonFillRatio?: number;
+  // Scoring
+  distanceThreshold?: number;
+  vertexBonusEndpoint?: number;
+  vertexBonusJoint?: number;
+  vertexSigma?: number;
+  brightnessWeight?: number;
+  maxConstellationStars?: number;
+  spreadWeight?: number;
+}
+
+// ── Internal types ────────────────────────────────────────────────────────
+
+interface ModelDefaults {
+  seedMaxMag: number;
+  patchRadius: number;
+  maxPatchRadius: number;
+  patchRadiusStep: number;
+  qualityThreshold: number;
+  coverageThreshold: number;
+  minMatchedStars: number;
+  rotationSteps: number;
+  skeletonFillRatio: number;
+  distanceThreshold: number;
+  vertexBonusEndpoint: number;
+  vertexBonusJoint: number;
+  vertexSigma: number;
+  brightnessWeight: number;
+  maxConstellationStars: number;
+  spreadWeight: number;
+}
+
+interface ResolvedConfig extends ModelDefaults {
+  model: ModelName;
+}
+
+interface ScoringModel {
+  defaults: ModelDefaults;
+  starLoss(d: number): number;
+  vertexBonus(dVtx: number, degree: number, cfg: ResolvedConfig): number;
+  spreadScore(matchedNorm: Point2D[], skelNorm: Point2D[], edges: [number, number][], cfg: ResolvedConfig): number;
+}
 
 // ── Haversine distance ────────────────────────────────────────────────────
 
@@ -34,6 +78,8 @@ function distanceDeg(ra1: number, dec1: number, ra2: number, dec2: number): numb
 
 export type Point2D = [number, number];
 
+/** Legacy utility — kept for unit tests. Not used in the matching hot path
+ *  since fix-normalization replaced it with a seed-anchored physical frame. */
 export function normalise(points: Point2D[]): Point2D[] {
   const xs = points.map((p) => p[0]);
   const ys = points.map((p) => p[1]);
@@ -79,11 +125,81 @@ export function vertexDegrees(edges: [number, number][], pointCount: number): nu
   return degrees;
 }
 
+// ── Model definitions ─────────────────────────────────────────────────────
+
+// Shared defaults — all three models start from these values.
+// Constants are in units of "fraction of patchRadius" (physical frame from fix-normalization).
+// At the default 10° patch: distanceThreshold=0.15 → 1.5°, vertexSigma=0.12 → 1.2°.
+// Validated empirically against 42-word test suite (see test-harness/).
+const BASE_DEFAULTS: ModelDefaults = {
+  seedMaxMag: 3,
+  patchRadius: 10,        // degrees
+  maxPatchRadius: 15,     // degrees
+  patchRadiusStep: 2.5,   // degrees
+  qualityThreshold: 0.80,
+  coverageThreshold: 0.60,
+  minMatchedStars: 6,
+  rotationSteps: 12,      // every 30°
+  skeletonFillRatio: 0.8, // skeleton longest axis = 80% of patch diameter
+  distanceThreshold: 0.15, // 1.5° at default patch
+  vertexBonusEndpoint: 0.6,
+  vertexBonusJoint: 0.1,
+  vertexSigma: 0.12,      // 1.2° at default patch
+  brightnessWeight: 0.3,
+  maxConstellationStars: 8,
+  spreadWeight: 0.2,
+};
+
+const SIMPLE_MODEL: ScoringModel = {
+  defaults: { ...BASE_DEFAULTS },
+  starLoss: (d) => d,
+  vertexBonus: () => 0,
+  spreadScore: () => 0,
+};
+
+const VERTEX_MODEL: ScoringModel = {
+  defaults: { ...BASE_DEFAULTS },
+  starLoss: (d) => d,
+  vertexBonus: (dVtx, degree, cfg) => {
+    const bonus = degree === 1 ? cfg.vertexBonusEndpoint : cfg.vertexBonusJoint;
+    return bonus * Math.exp(-(dVtx * dVtx) / (cfg.vertexSigma * cfg.vertexSigma));
+  },
+  spreadScore: () => 0,
+};
+
+const SPREAD_MODEL: ScoringModel = {
+  defaults: { ...BASE_DEFAULTS },
+  starLoss: (d) => d,
+  vertexBonus: (dVtx, degree, cfg) => VERTEX_MODEL.vertexBonus(dVtx, degree, cfg),
+  spreadScore: (matchedNorm, skelNorm, edges, cfg) => {
+    if (edges.length === 0) return 0;
+    const covered = edges.filter(([i, j]) =>
+      matchedNorm.some((mn) => pointToSegmentDist(mn, skelNorm[i], skelNorm[j]) < cfg.distanceThreshold),
+    ).length;
+    return covered / edges.length;
+  },
+};
+
+const MODELS: Record<ModelName, ScoringModel> = {
+  simple: SIMPLE_MODEL,
+  vertex: VERTEX_MODEL,
+  spread: SPREAD_MODEL,
+};
+
+function resolveConfig(config?: MatcherConfig): ResolvedConfig {
+  const modelName = config?.model ?? 'vertex';
+  const model = MODELS[modelName];
+  return { ...model.defaults, ...config, model: modelName };
+}
+
+// ── Scoring ───────────────────────────────────────────────────────────────
+
 export function effectiveDist(
   starNorm: Point2D,
   skelNorm: Point2D[],
   edges: [number, number][],
   degrees: number[],
+  cfg: ResolvedConfig = resolveConfig(),
 ): number {
   let dSeg = Infinity;
   for (const [i, j] of edges) {
@@ -92,19 +208,19 @@ export function effectiveDist(
   }
 
   let dVtx = Infinity;
-  let bestBonus = VERTEX_BONUS_JOINT;
+  let bestDegree = 2;
   for (let k = 0; k < skelNorm.length; k++) {
     const dx = starNorm[0] - skelNorm[k][0];
     const dy = starNorm[1] - skelNorm[k][1];
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < dVtx) {
       dVtx = d;
-      bestBonus = degrees[k] === 1 ? VERTEX_BONUS_ENDPOINT : VERTEX_BONUS_JOINT;
+      bestDegree = degrees[k];
     }
   }
 
-  const gaussian = bestBonus * Math.exp(-(dVtx * dVtx) / (VERTEX_SIGMA * VERTEX_SIGMA));
-  return dSeg * (1 - gaussian);
+  const bonus = MODELS[cfg.model].vertexBonus(dVtx, bestDegree, cfg);
+  return dSeg * (1 - bonus);
 }
 
 export function maxPairwiseAngularDist(stars: Star[]): number {
@@ -126,8 +242,8 @@ export function selectConstellationStars(
   degrees: number[],
   matchedStars: Star[],
   matchedNorm: Point2D[],
+  cfg: ResolvedConfig = resolveConfig(),
 ): Star[] {
-  // Process vertices degree-1 (endpoints) first, then higher degrees
   const vertexOrder = skelNorm
     .map((_, i) => i)
     .sort((a, b) => (degrees[a] === 1 ? 0 : 1) - (degrees[b] === 1 ? 0 : 1));
@@ -136,7 +252,7 @@ export function selectConstellationStars(
   const result: Star[] = [];
 
   for (const vi of vertexOrder) {
-    if (result.length >= MAX_CONSTELLATION_STARS) break;
+    if (result.length >= cfg.maxConstellationStars) break;
 
     const [vx, vy] = skelNorm[vi];
     let bestScore = Infinity;
@@ -147,7 +263,7 @@ export function selectConstellationStars(
       const dx = matchedNorm[j][0] - vx;
       const dy = matchedNorm[j][1] - vy;
       const dVtx = Math.sqrt(dx * dx + dy * dy);
-      const score = dVtx + BRIGHTNESS_WEIGHT * (matchedStars[j].mag / MAX_MAG);
+      const score = dVtx + cfg.brightnessWeight * (matchedStars[j].mag / 6.0);
       if (score < bestScore) {
         bestScore = score;
         bestIdx = j;
@@ -177,40 +293,34 @@ function scoreAndMatch(
   edges: [number, number][],
   candidates: Star[],
   rotDeg: number,
+  seed: Star,
+  cfg: ResolvedConfig,
 ): ScoreResult {
-  // y-flip: LLM uses y=0 top, sky uses Dec increasing upward
-  const flipped: Point2D[] = skelPoints.map(([x, y]) => [x, -y]);
+  const centered: Point2D[] = skelPoints.map(([x, y]) => [x - 0.5, 0.5 - y]);
+  const scale = cfg.skeletonFillRatio * 2;
+  const skelNorm: Point2D[] = rotate(centered, rotDeg).map(([x, y]) => [x * scale, y * scale]);
 
-  // Normalise skeleton (rotated)
-  const skelNorm = normalise(rotate(flipped, rotDeg));
-
-  // Normalise candidate star positions using flat-sky approx
-  const starFlat: Point2D[] = candidates.map((s) => [s.ra, s.dec]);
-  const starNorm = normalise(starFlat);
-
-  // Star bounding box params for inverse transform (skelNorm → RA/Dec)
-  const starXs = starFlat.map((p) => p[0]);
-  const starYs = starFlat.map((p) => p[1]);
-  const starMinX = Math.min(...starXs), starMaxX = Math.max(...starXs);
-  const starMinY = Math.min(...starYs), starMaxY = Math.max(...starYs);
-  const starRange = Math.max(starMaxX - starMinX, starMaxY - starMinY) || 1;
-  const starCx = (starMinX + starMaxX) / 2;
-  const starCy = (starMinY + starMaxY) / 2;
+  const starNorm: Point2D[] = candidates.map((s) => [
+    (s.ra - seed.ra) / cfg.patchRadius,
+    (s.dec - seed.dec) / cfg.patchRadius,
+  ]);
 
   const degrees = vertexDegrees(edges, skelPoints.length);
 
-  // Score each candidate star, tracking its normalised position
   const matched: Array<{ star: Star; norm: Point2D; d: number }> = [];
   for (let j = 0; j < candidates.length; j++) {
-    const d = effectiveDist(starNorm[j], skelNorm, edges, degrees);
-    if (d < DISTANCE_THRESHOLD) {
+    const d = effectiveDist(starNorm[j], skelNorm, edges, degrees, cfg);
+    if (d < cfg.distanceThreshold) {
       matched.push({ star: candidates[j], norm: starNorm[j], d });
     }
   }
 
   matched.sort((a, b) => a.d - b.d);
 
-  const score = candidates.length > 0 ? matched.length / candidates.length : 0;
+  const coverageRatio = candidates.length > 0 ? matched.length / candidates.length : 0;
+  const model = MODELS[cfg.model];
+  const spread = model.spreadScore(matched.map((m) => m.norm), skelNorm, edges, cfg);
+  const score = coverageRatio + cfg.spreadWeight * spread;
 
   const constellationStars = selectConstellationStars(
     skelNorm,
@@ -218,12 +328,12 @@ function scoreAndMatch(
     degrees,
     matched.map((m) => m.star),
     matched.map((m) => m.norm),
+    cfg,
   );
 
-  // Convert skeleton normalised coords to RA/Dec using star bounding box
   const skeletonRaDec = skelNorm.map(([nx, ny]) => ({
-    ra: nx * starRange + starCx,
-    dec: ny * starRange + starCy,
+    ra: nx * cfg.patchRadius + seed.ra,
+    dec: ny * cfg.patchRadius + seed.dec,
   }));
 
   return { score, stars: matched.map((m) => m.star), constellationStars, skeletonRaDec };
@@ -236,11 +346,12 @@ function runSeedSweep(
   catalogue: Star[],
   excludeSeeds: Set<number>,
   patchRadius: number,
+  cfg: ResolvedConfig,
 ): (ScoreResult & { seed: Star }) | null {
   const { points, edges } = skeleton;
 
   const seeds = catalogue
-    .filter((s) => s.mag <= SEED_MAX_MAG && !excludeSeeds.has(s.id))
+    .filter((s) => s.mag <= cfg.seedMaxMag && !excludeSeeds.has(s.id))
     .sort((a, b) => a.mag - b.mag);
 
   let globalBest: (ScoreResult & { seed: Star }) | null = null;
@@ -249,13 +360,13 @@ function runSeedSweep(
     const candidates = catalogue.filter(
       (s) => distanceDeg(s.ra, s.dec, seed.ra, seed.dec) <= patchRadius,
     );
-    if (candidates.length < MIN_MATCHED_STARS) continue;
+    if (candidates.length < cfg.minMatchedStars) continue;
 
     let best: ScoreResult = { score: 0, stars: [], constellationStars: [], skeletonRaDec: [] };
 
-    for (let r = 0; r < ROTATION_STEPS; r++) {
-      const rotDeg = (r * 360) / ROTATION_STEPS;
-      const result = scoreAndMatch(points, edges, candidates, rotDeg);
+    for (let r = 0; r < cfg.rotationSteps; r++) {
+      const rotDeg = (r * 360) / cfg.rotationSteps;
+      const result = scoreAndMatch(points, edges, candidates, rotDeg, seed, cfg);
       if (result.score > best.score) best = result;
     }
 
@@ -263,7 +374,7 @@ function runSeedSweep(
       globalBest = { ...best, seed };
     }
 
-    if (best.score >= COVERAGE_THRESHOLD && best.stars.length >= MIN_MATCHED_STARS) {
+    if (best.score >= cfg.coverageThreshold && best.stars.length >= cfg.minMatchedStars) {
       console.log(
         `[matcher] hit ${(best.score * 100).toFixed(0)}% (${best.stars.length} stars) on seed ${seed.id} mag ${seed.mag.toFixed(2)}`,
       );
@@ -276,28 +387,33 @@ function runSeedSweep(
 
 // ── Public API ────────────────────────────────────────────────────────────
 
+const ORION_SPAN_DEG = 25;
+
 export function match(
   catalogue: Star[],
   skeletons: Skeleton[],
   excludeSeeds: Set<number> = new Set(),
+  config?: MatcherConfig,
 ): MatchResult | null {
+  const cfg = resolveConfig(config);
+
   let globalBest: (ScoreResult & { seed: Star; variantIndex: number }) | null = null;
-  let currentRadius = PATCH_RADIUS_DEG;
+  let currentRadius = cfg.patchRadius;
 
   while (true) {
     for (let i = 0; i < skeletons.length; i++) {
-      const result = runSeedSweep(skeletons[i], catalogue, excludeSeeds, currentRadius);
+      const result = runSeedSweep(skeletons[i], catalogue, excludeSeeds, currentRadius, cfg);
       if (!result) continue;
       if (!globalBest || result.score > globalBest.score) {
         globalBest = { ...result, variantIndex: i };
       }
     }
 
-    if (globalBest && globalBest.score >= QUALITY_THRESHOLD) break;
-    if (currentRadius >= MAX_PATCH_RADIUS_DEG) break;
-    const next = Math.min(currentRadius + PATCH_RADIUS_STEP, MAX_PATCH_RADIUS_DEG);
+    if (globalBest && globalBest.score >= cfg.qualityThreshold) break;
+    if (currentRadius >= cfg.maxPatchRadius) break;
+    const next = Math.min(currentRadius + cfg.patchRadiusStep, cfg.maxPatchRadius);
     console.log(
-      `[matcher] score ${globalBest ? (globalBest.score * 100).toFixed(0) + '%' : 'none'} below ${(QUALITY_THRESHOLD * 100).toFixed(0)}%, expanding radius ${currentRadius}° → ${next}°`,
+      `[matcher] score ${globalBest ? (globalBest.score * 100).toFixed(0) + '%' : 'none'} below ${(cfg.qualityThreshold * 100).toFixed(0)}%, expanding radius ${currentRadius}° → ${next}°`,
     );
     currentRadius = next;
   }
@@ -307,7 +423,7 @@ export function match(
   excludeSeeds.add(globalBest.seed.id);
 
   console.log(
-    `[matcher] variant ${globalBest.variantIndex} won with ${(globalBest.score * 100).toFixed(0)}%`,
+    `[matcher] variant ${globalBest.variantIndex} won with ${(globalBest.score * 100).toFixed(0)}% (model: ${cfg.model})`,
   );
 
   const span = maxPairwiseAngularDist(globalBest.stars);
