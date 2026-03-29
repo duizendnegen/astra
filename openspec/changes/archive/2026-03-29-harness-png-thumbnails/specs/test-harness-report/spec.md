@@ -1,7 +1,7 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Self-contained report HTML
-The runner SHALL generate `test-harness/reports/{runId}/report.html`. Patch star data SHALL NOT be embedded in the HTML — thumbnails are served as separate PNG files. The report SHALL require a local server (or file access) to display images.
+The runner SHALL generate `test-harness/reports/{runId}/report.html`. It SHALL load D3 from CDN and embed run metadata as JSON. Patch star data SHALL NOT be embedded in the HTML — thumbnails are served as separate PNG files. The report SHALL require a local server (or file access) to display images.
 
 #### Scenario: Report opens via local server
 - **WHEN** Playwright (or a browser) opens `report.html` via `http://localhost:PORT`
@@ -13,7 +13,7 @@ Each word card SHALL contain:
 2. A thumbnail image (`<img src="./{word}.png">`) at ≥300px wide showing the patch render
 3. A score bar colored green (≥80%), amber (≥65%), or red (<65%)
 4. Metric labels: matched star count and angular size in degrees
-5. A ⚠️ flag if angular size < 2.5° (less than 10% of Orion's ~25°)
+5. A ⚠️ flag if angular size < 2.5°
 
 #### Scenario: Green card
 - **WHEN** a word has score ≥ 80%

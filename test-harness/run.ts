@@ -5,11 +5,13 @@ import { match, maxPairwiseAngularDist } from '../frontend/src/matcher.ts';
 import type { MatcherConfig, ModelName } from '../frontend/src/matcher.ts';
 import type { Star, Skeleton, MatchResult } from '../frontend/src/types.ts';
 import { words } from './words.ts';
+import { renderPatch } from './render-patch.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Must match PATCH_RADIUS_DEG in frontend/src/matcher.ts
 const PATCH_RADIUS_DEG = 10;
+const THUMB_SIZE = 300;
 const ORION_SPAN_DEG = 25;
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -192,6 +194,9 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
         patchStars,
       };
     }
+    const pngBuf = renderPatch(wordResult, { width: THUMB_SIZE, height: THUMB_SIZE, patchRadiusDeg: PATCH_RADIUS_DEG });
+    fs.writeFileSync(path.join(outDir, `${word}.png`), pngBuf);
+
     results.push(wordResult);
   }
 
@@ -229,9 +234,9 @@ function generateReportHtml(run: RunResults): string {
     const pct = Math.round(r.score * 100);
     const color = scoreColor(r.score);
     const sizeFlag = r.angularSize > 0 && r.angularSize < 2.5 ? ' ⚠️' : '';
-    return `<div class="card" data-word="${r.word}">
+    return `<div class="card">
   <div class="word">${r.word}</div>
-  <canvas class="sky" width="150" height="130" data-word="${r.word}"></canvas>
+  <img src="./${r.word}.png" class="sky" width="${THUMB_SIZE}" height="${THUMB_SIZE}" alt="${r.word}">
   <div class="bar-wrap"><div class="bar" style="width:${pct}%;background:${color}"></div></div>
   <div class="metrics">
     <span class="score" style="color:${color}">${pct}%</span>
@@ -255,10 +260,10 @@ function generateReportHtml(run: RunResults): string {
   .meta { font-size: 0.8rem; color: #888; }
   .counts { display: inline-flex; gap: 12px; margin-left: 12px; font-size: 0.85rem; }
   .counts .g { color: #22c55e; } .counts .a { color: #f59e0b; } .counts .r { color: #ef4444; }
-  .grid { display: flex; flex-wrap: wrap; gap: 10px; }
-  .card { background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; width: 200px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; width: 320px; }
   .word { font-size: 0.9rem; font-weight: bold; color: #fff; margin-bottom: 6px; text-transform: capitalize; }
-  .sky { display: block; background: #05050f; border-radius: 3px; margin-bottom: 6px; }
+  .sky { display: block; width: 100%; height: auto; border-radius: 3px; margin-bottom: 6px; }
   .bar-wrap { height: 6px; background: #1e1e3a; border-radius: 3px; margin-bottom: 6px; overflow: hidden; }
   .bar { height: 100%; border-radius: 3px; }
   .metrics { display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 0.7rem; color: #888; }
@@ -279,84 +284,6 @@ function generateReportHtml(run: RunResults): string {
 <div class="grid">
 ${cards}
 </div>
-<script id="run-data" type="application/json">${JSON.stringify(run.results)}</script>
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script>
-(function () {
-  const results = JSON.parse(document.getElementById('run-data').textContent);
-  const byWord = Object.fromEntries(results.map(r => [r.word, r]));
-  const PATCH_R = ${PATCH_RADIUS_DEG};
-
-  function renderCard(canvas, r) {
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    ctx.fillStyle = '#05050f';
-    ctx.fillRect(0, 0, w, h);
-    if (!r.matched || r.patchStars.length === 0) {
-      ctx.fillStyle = '#333';
-      ctx.font = '10px system-ui';
-      ctx.textAlign = 'center';
-      ctx.fillText('no match', w / 2, h / 2);
-      return;
-    }
-
-    const proj = d3.geoStereographic()
-      .rotate([-r.patchRA, -r.patchDec])
-      .scale((Math.min(w, h) / 2) / (PATCH_R * Math.PI / 180))
-      .translate([w / 2, h / 2]);
-
-    const matchedIds = new Set(r.matchedStarIds);
-    const constIds = new Set(r.constellationStarIds);
-
-    // Background patch stars
-    for (const s of r.patchStars) {
-      const p = proj([s.ra, s.dec]);
-      if (!p) continue;
-      const [x, y] = p;
-      if (x < 0 || x > w || y < 0 || y > h) continue;
-      const radius = Math.max(0.4, 2.2 - s.mag * 0.25);
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      if (constIds.has(s.id)) {
-        ctx.fillStyle = '#ffffff';
-        ctx.shadowColor = '#8af';
-        ctx.shadowBlur = 4;
-      } else if (matchedIds.has(s.id)) {
-        ctx.fillStyle = '#aabbdd';
-        ctx.shadowBlur = 0;
-      } else {
-        ctx.fillStyle = '#2a2a55';
-        ctx.shadowBlur = 0;
-      }
-      ctx.fill();
-    }
-    ctx.shadowBlur = 0;
-
-    // Skeleton edges
-    if (r.skeletonPoints && r.skeletonPoints.length > 0 && r.edges && r.edges.length > 0) {
-      ctx.strokeStyle = 'rgba(100, 160, 255, 0.55)';
-      ctx.lineWidth = 1;
-      for (const [i, j] of r.edges) {
-        const a = r.skeletonPoints[i], b = r.skeletonPoints[j];
-        if (!a || !b) continue;
-        const pa = proj([a.ra, a.dec]);
-        const pb = proj([b.ra, b.dec]);
-        if (!pa || !pb) continue;
-        ctx.beginPath();
-        ctx.moveTo(pa[0], pa[1]);
-        ctx.lineTo(pb[0], pb[1]);
-        ctx.stroke();
-      }
-    }
-  }
-
-  document.querySelectorAll('canvas.sky').forEach(canvas => {
-    const word = canvas.dataset.word;
-    const r = byWord[word];
-    if (r) renderCard(canvas, r);
-  });
-})();
-</script>
 </body>
 </html>`;
 }
@@ -378,12 +305,12 @@ function generateCompareHtml(idA: string, idB: string, runA: RunResults, runB: R
   <div class="halves">
     <div class="half">
       <div class="run-label">${idA}</div>
-      <canvas class="sky sky-a" width="90" height="90" data-word="${rA.word}" data-run="a"></canvas>
+      <img src="../${idA}/${rA.word}.png" class="sky" alt="${rA.word} (${idA})">
       <div class="score" style="color:${scoreColor(rA.score)}">${pctA}%</div>
     </div>
     <div class="half">
       <div class="run-label">${idB}</div>
-      <canvas class="sky sky-b" width="90" height="90" data-word="${rA.word}" data-run="b"></canvas>
+      <img src="../${idB}/${rA.word}.png" class="sky" alt="${rA.word} (${idB})">
       <div class="score" style="color:${rB ? scoreColor(rB.score) : '#555'}">${pctB}%</div>
     </div>
   </div>
@@ -400,14 +327,14 @@ function generateCompareHtml(idA: string, idB: string, runA: RunResults, runB: R
   body { background: #0d0d1f; color: #ccc; font-family: system-ui, sans-serif; padding: 16px; }
   header { margin-bottom: 16px; }
   h1 { font-size: 1.1rem; color: #fff; margin-bottom: 4px; }
-  .grid { display: flex; flex-wrap: wrap; gap: 10px; }
-  .card { background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; width: 210px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; width: 440px; }
   .word { font-size: 0.9rem; font-weight: bold; color: #fff; margin-bottom: 6px; text-transform: capitalize; }
   .delta { font-size: 0.75rem; font-weight: bold; }
   .halves { display: flex; gap: 6px; }
   .half { flex: 1; text-align: center; }
   .run-label { font-size: 0.65rem; color: #555; margin-bottom: 3px; }
-  .sky { background: #05050f; border-radius: 3px; display: block; }
+  .sky { display: block; width: 100%; height: auto; border-radius: 3px; background: #05050f; }
   .score { font-size: 0.75rem; font-weight: bold; margin-top: 3px; }
 </style>
 </head>
@@ -418,65 +345,6 @@ function generateCompareHtml(idA: string, idB: string, runA: RunResults, runB: R
 <div class="grid">
 ${cards}
 </div>
-<script id="data-a" type="application/json">${JSON.stringify(runA.results)}</script>
-<script id="data-b" type="application/json">${JSON.stringify(runB.results)}</script>
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script>
-(function () {
-  const PATCH_R = ${PATCH_RADIUS_DEG};
-  const dataA = JSON.parse(document.getElementById('data-a').textContent);
-  const dataB = JSON.parse(document.getElementById('data-b').textContent);
-  const byWordA = Object.fromEntries(dataA.map(r => [r.word, r]));
-  const byWordB = Object.fromEntries(dataB.map(r => [r.word, r]));
-
-  function renderCanvas(canvas, r) {
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width, h = canvas.height;
-    ctx.fillStyle = '#05050f';
-    ctx.fillRect(0, 0, w, h);
-    if (!r || !r.matched || r.patchStars.length === 0) {
-      ctx.fillStyle = '#333';
-      ctx.font = '9px system-ui';
-      ctx.textAlign = 'center';
-      ctx.fillText('no match', w / 2, h / 2);
-      return;
-    }
-    const proj = d3.geoStereographic()
-      .rotate([-r.patchRA, -r.patchDec])
-      .scale((Math.min(w, h) / 2) / (PATCH_R * Math.PI / 180))
-      .translate([w / 2, h / 2]);
-    const matchedIds = new Set(r.matchedStarIds);
-    const constIds = new Set(r.constellationStarIds);
-    for (const s of r.patchStars) {
-      const p = proj([s.ra, s.dec]);
-      if (!p) continue;
-      const [x, y] = p;
-      if (x < 0 || x > w || y < 0 || y > h) continue;
-      ctx.beginPath();
-      ctx.arc(x, y, Math.max(0.4, 1.8 - s.mag * 0.2), 0, Math.PI * 2);
-      ctx.fillStyle = constIds.has(s.id) ? '#fff' : matchedIds.has(s.id) ? '#aabbdd' : '#2a2a55';
-      ctx.fill();
-    }
-    if (r.skeletonPoints && r.edges) {
-      ctx.strokeStyle = 'rgba(100,160,255,0.55)';
-      ctx.lineWidth = 1;
-      for (const [i, j] of r.edges) {
-        const a = r.skeletonPoints[i], b = r.skeletonPoints[j];
-        if (!a || !b) continue;
-        const pa = proj([a.ra, a.dec]), pb = proj([b.ra, b.dec]);
-        if (!pa || !pb) continue;
-        ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
-      }
-    }
-  }
-
-  document.querySelectorAll('canvas.sky').forEach(canvas => {
-    const word = canvas.dataset.word;
-    const run = canvas.dataset.run;
-    renderCanvas(canvas, run === 'a' ? byWordA[word] : byWordB[word]);
-  });
-})();
-</script>
 </body>
 </html>`;
 }
