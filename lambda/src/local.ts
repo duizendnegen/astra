@@ -56,10 +56,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   console.log(`[local] generating skeleton: ${word}`);
-  const skeleton = await generateSkeleton(word, API_KEY);
-  cache.set(word, skeleton);
+  const skeletons = await generateSkeleton(word, API_KEY);
+  const payload = { skeletons };
+  cache.set(word, payload);
   res.writeHead(200);
-  res.end(JSON.stringify(skeleton));
+  res.end(JSON.stringify(payload));
 });
 
 server.listen(PORT, () => {

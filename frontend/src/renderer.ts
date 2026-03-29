@@ -63,26 +63,30 @@ function distanceDeg(ra1: number, dec1: number, ra2: number, dec2: number): numb
 // ── Draw ─────────────────────────────────────────────────────────────────
 
 function drawStars(): void {
-  const matchedIds = new Set(constellation?.stars.map((s) => s.id) ?? []);
+  const constellationIds = new Set(constellation?.constellationStars.map((s) => s.id) ?? []);
+  const onPatternIds = new Set(constellation?.stars.map((s) => s.id) ?? []);
 
   for (const star of stars) {
     const pt = project(star.ra, star.dec);
     if (!pt) continue;
     if (pt[0] < -2 || pt[0] > canvas.width + 2 || pt[1] < -2 || pt[1] > canvas.height + 2) continue;
 
-    const isMatched = matchedIds.has(star.id);
-    if (isMatched) continue; // drawn separately on top
+    if (constellationIds.has(star.id)) continue; // drawn on top in drawConstellation
 
     let alpha = magToAlpha(star.mag);
+    let radius = magToRadius(star.mag);
 
-    // Dim by distance from constellation centre if result visible
-    if (constellation) {
+    if (onPatternIds.has(star.id)) {
+      // On-pattern context tier: slightly brighter, no distance dimming
+      alpha = Math.min(1, alpha * 1.6);
+      radius *= 1.2;
+    } else if (constellation) {
+      // Background tier: dim by distance from constellation centre
       const dist = distanceDeg(star.ra, star.dec, constellation.patchRA, constellation.patchDec);
       const dimFactor = Math.max(0.08, 1 - dist / DIM_FALLOFF_DEG);
       alpha *= dimFactor;
     }
 
-    const radius = magToRadius(star.mag);
     ctx.beginPath();
     ctx.arc(pt[0], pt[1], radius, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(220,226,250,${alpha.toFixed(3)})`;
@@ -93,10 +97,10 @@ function drawStars(): void {
 function drawConstellation(): void {
   if (!constellation) return;
 
-  const { stars: matched, edges, skeletonPoints } = constellation;
+  const { constellationStars, edges, skeletonPoints } = constellation;
 
-  // Project matched star positions
-  const starPositions: ([number, number] | null)[] = matched.map((s) => project(s.ra, s.dec));
+  // Project constellation star positions
+  const starPositions: ([number, number] | null)[] = constellationStars.map((s) => project(s.ra, s.dec));
 
   if (skeletonPoints && skeletonPoints.length > 0) {
     // Project skeleton contour points
@@ -117,42 +121,13 @@ function drawConstellation(): void {
     }
     ctx.globalAlpha = 1;
 
-    // Draw thin dashed connectors from each skeleton point to its matched star
-    ctx.strokeStyle = 'rgba(167,200,255,0.22)';
-    ctx.lineWidth = 0.75;
-    ctx.setLineDash([3, 5]);
-    for (let i = 0; i < skeletonPoints.length; i++) {
-      const sp = skelPositions[i];
-      const st = starPositions[i];
-      if (!sp || !st) continue;
-      ctx.beginPath();
-      ctx.moveTo(sp[0], sp[1]);
-      ctx.lineTo(st[0], st[1]);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-  } else {
-    // Fallback: draw edges between matched stars (for old share links without skeletonPoints)
-    ctx.strokeStyle = STAR_LINE_COLOR;
-    ctx.lineWidth = 1.5;
-    ctx.globalAlpha = 0.75;
-    for (const [i, j] of edges) {
-      const a = starPositions[i];
-      const b = starPositions[j];
-      if (!a || !b) continue;
-      ctx.beginPath();
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(b[0], b[1]);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
   }
 
-  // Draw matched star dots on top
-  for (let idx = 0; idx < matched.length; idx++) {
+  // Draw constellation star dots on top
+  for (let idx = 0; idx < constellationStars.length; idx++) {
     const pt = starPositions[idx];
     if (!pt) continue;
-    const star = matched[idx];
+    const star = constellationStars[idx];
     ctx.beginPath();
     ctx.arc(pt[0], pt[1], MATCHED_STAR_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';

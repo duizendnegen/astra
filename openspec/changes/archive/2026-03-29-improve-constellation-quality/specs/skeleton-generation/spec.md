@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Skeleton endpoint
 The system SHALL expose a `POST /api/skeleton` endpoint accepting `{ "word": string }` and returning `{ "skeletons": Skeleton[] }` where each skeleton has `points` and `edges`. The word SHALL be normalised (lowercased, trimmed) before processing.
@@ -35,10 +35,3 @@ On a malformed or schema-invalid LLM response the Lambda SHALL retry the full pi
 #### Scenario: All variants invalid after retry
 - **WHEN** both pipeline attempts produce no valid skeletons
 - **THEN** `{ skeletons: [TRIANGLE_FALLBACK] }` is returned with HTTP 200
-
-### Requirement: API key never exposed to client
-The Lambda SHALL hold the OpenRouter API key as an environment variable. The key SHALL never be included in any response or client-reachable resource.
-
-#### Scenario: Client requests skeleton
-- **WHEN** the browser calls `/api/skeleton`
-- **THEN** no API key or credential appears in the response or response headers

@@ -35,18 +35,19 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 
   const cached = await dynamo.send(new GetCommand({ TableName: TABLE_NAME, Key: { word } }));
-  if (cached.Item?.skeleton) {
-    return { statusCode: 200, headers, body: JSON.stringify(cached.Item.skeleton) };
+  if (cached.Item?.skeletons) {
+    return { statusCode: 200, headers, body: JSON.stringify({ skeletons: cached.Item.skeletons }) };
   }
 
   const apiKey = await getApiKey();
-  const skeleton = await generateSkeleton(word, apiKey);
+  const skeletons = await generateSkeleton(word, apiKey);
 
-  if (skeleton !== TRIANGLE_FALLBACK) {
+  const isFallback = skeletons.length === 1 && skeletons[0] === TRIANGLE_FALLBACK;
+  if (!isFallback) {
     await dynamo.send(
-      new PutCommand({ TableName: TABLE_NAME, Item: { word, skeleton } }),
+      new PutCommand({ TableName: TABLE_NAME, Item: { word, skeletons } }),
     );
   }
 
-  return { statusCode: 200, headers, body: JSON.stringify(skeleton) };
+  return { statusCode: 200, headers, body: JSON.stringify({ skeletons }) };
 }

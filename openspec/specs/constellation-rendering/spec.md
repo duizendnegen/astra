@@ -1,18 +1,22 @@
 ## ADDED Requirements
 
 ### Requirement: Constellation edges drawn between matched stars
-The system SHALL draw the constellation by rendering lines between matched star pairs as defined by the edge list. Lines SHALL be drawn on the canvas in the constellation line colour (#a7c8ff) at reduced opacity.
+The system SHALL draw constellation lines between `constellationStars` pairs as defined by the skeleton edge list (with edges interpreted as indices into the skeleton vertex order, matched to `constellationStars` by position). Lines SHALL be drawn in the constellation line colour (#a7c8ff) at reduced opacity.
 
-#### Scenario: Edges rendered
-- **WHEN** a match result is available
-- **THEN** a line is drawn between each pair of matched stars defined by the edge list
+#### Scenario: Edges rendered between constellation stars
+- **WHEN** a match result with `constellationStars` is available
+- **THEN** lines are drawn between `constellationStars` pairs defined by the skeleton edge list
 
 ### Requirement: Matched stars brightened
-The system SHALL render matched constellation stars larger and brighter than background stars of equivalent magnitude, making the constellation legible against the field.
+The system SHALL render `constellationStars` fully bright and at increased size. Stars in `MatchResult.stars` that are not in `constellationStars` SHALL be rendered slightly brighter than ordinary background stars but dimmer than constellation stars, forming a visible on-pattern context layer.
 
-#### Scenario: Constellation stars distinguished
+#### Scenario: Three-tier star brightness
 - **WHEN** the constellation is rendered
-- **THEN** matched stars are visually larger and brighter than surrounding background stars
+- **THEN** `constellationStars` are the brightest, on-pattern context stars (`stars` minus `constellationStars`) are intermediate, and background stars are the dimmest
+
+#### Scenario: On-pattern context layer visible
+- **WHEN** the constellation region is shown
+- **THEN** stars near skeleton edges but not in `constellationStars` are visibly brighter than the general background field
 
 ### Requirement: Background stars dimmed by distance from constellation centre
 The system SHALL reduce the opacity of background stars based on their angular distance from the constellation patch centre, creating a "portrait with context" framing where the constellation is the subject and the surrounding field recedes.

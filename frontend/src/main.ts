@@ -22,7 +22,7 @@ const closeBtn        = document.getElementById('close-btn') as HTMLButtonElemen
 
 // ── State ─────────────────────────────────────────────────────────────────
 let currentState: ConstellationState | null = null;
-let usedPatches: Set<string> = new Set();
+let usedPatches: Set<number> = new Set();
 
 // ── UI helpers ────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ function showResult(state: ConstellationState): void {
 
 function showLanding(): void {
   currentState = null;
-  usedPatches = new Set();
+  usedPatches = new Set<number>();
   setConstellation(null);
   resultPanel.setAttribute('hidden', '');
   landing.style.display = '';
@@ -66,10 +66,10 @@ async function findConstellation(word: string): Promise<void> {
       body: JSON.stringify({ word }),
     });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
-    const skeleton = await res.json();
+    const { skeletons } = await res.json() as { skeletons: import('./types').Skeleton[] };
 
     const catalogue = getCatalogue();
-    const matchResult = match(catalogue, skeleton, usedPatches);
+    const matchResult = match(catalogue, skeletons, usedPatches);
     if (!matchResult) throw new Error('No patch found — try again');
 
     currentState = { word, match: matchResult };

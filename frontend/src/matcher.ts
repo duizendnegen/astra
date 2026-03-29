@@ -1,12 +1,21 @@
 import type { Star, Skeleton, MatchResult } from './types';
 
-const PATCH_RADIUS_DEG = 20;
+const SEED_MAX_MAG = 3;
+const PATCH_RADIUS_DEG = 10;
+const MAX_PATCH_RADIUS_DEG = 15;
+const PATCH_RADIUS_STEP = 2.5;
+const QUALITY_THRESHOLD = 0.80;
 const COVERAGE_THRESHOLD = 0.60;
 const MIN_MATCHED_STARS = 6;
-const MAX_ATTEMPTS = 60;
 const ROTATION_STEPS = 12; // test every 30°
 const DISTANCE_THRESHOLD = 0.10; // normalised unit space
-const CANDIDATE_COUNT = 12; // fixed pool size, independent of skeleton size
+const VERTEX_BONUS_ENDPOINT = 0.6;
+const VERTEX_BONUS_JOINT = 0.1;
+const VERTEX_SIGMA = 0.08;
+const ORION_SPAN_DEG = 25;
+const BRIGHTNESS_WEIGHT = 0.3;
+const MAX_MAG = 6.0;
+const MAX_CONSTELLATION_STARS = 8;
 
 // ── Haversine distance ────────────────────────────────────────────────────
 
@@ -21,16 +30,7 @@ function distanceDeg(ra1: number, dec1: number, ra2: number, dec2: number): numb
   return (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 180) / Math.PI;
 }
 
-// ── Patch extraction ──────────────────────────────────────────────────────
-
-function starsInPatch(catalogue: Star[], ra: number, dec: number, count: number): Star[] {
-  return catalogue
-    .filter((s) => distanceDeg(s.ra, s.dec, ra, dec) <= PATCH_RADIUS_DEG)
-    .sort((a, b) => a.mag - b.mag) // brightest first
-    .slice(0, count);
-}
-
-// ── Normalisation ─────────────────────────────────────────────────────────
+// ── Normalisation & rotation ──────────────────────────────────────────────
 
 export type Point2D = [number, number];
 
@@ -51,91 +51,144 @@ export function rotate(points: Point2D[], angleDeg: number): Point2D[] {
   return points.map(([x, y]) => [x * cos - y * sin, x * sin + y * cos]);
 }
 
-// ── Hungarian algorithm (Munkres) ────────────────────────────────────────
-// Minimises total assignment cost for an n×n cost matrix.
+// ── Geometry utilities ────────────────────────────────────────────────────
 
-export function hungarian(cost: number[][]): number[] {
-  const n = cost.length;
-  const u = new Array<number>(n + 1).fill(0);
-  const v = new Array<number>(n + 1).fill(0);
-  const p = new Array<number>(n + 1).fill(0);
-  const way = new Array<number>(n + 1).fill(0);
-
-  for (let i = 1; i <= n; i++) {
-    p[0] = i;
-    let j0 = 0;
-    const minVal = new Array<number>(n + 1).fill(Infinity);
-    const used = new Array<boolean>(n + 1).fill(false);
-
-    do {
-      used[j0] = true;
-      let i0 = p[j0], delta = Infinity, j1 = -1;
-
-      for (let j = 1; j <= n; j++) {
-        if (!used[j]) {
-          const cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
-          if (cur < minVal[j]) { minVal[j] = cur; way[j] = j0; }
-          if (minVal[j] < delta) { delta = minVal[j]; j1 = j; }
-        }
-      }
-
-      for (let j = 0; j <= n; j++) {
-        if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
-        else { minVal[j] -= delta; }
-      }
-      j0 = j1!;
-    } while (p[j0] !== 0);
-
-    do {
-      p[j0] = p[way[j0]];
-      j0 = way[j0];
-    } while (j0);
+export function pointToSegmentDist(p: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) {
+    const ex = p[0] - a[0];
+    const ey = p[1] - a[1];
+    return Math.sqrt(ex * ex + ey * ey);
   }
-
-  // Build assignment: result[i] = j (0-indexed), star j assigned to skeleton point i
-  const assignment = new Array<number>(n).fill(-1);
-  for (let j = 1; j <= n; j++) {
-    if (p[j] !== 0) assignment[p[j] - 1] = j - 1;
-  }
-  return assignment;
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+  const cx = a[0] + t * dx;
+  const cy = a[1] + t * dy;
+  const ex = p[0] - cx;
+  const ey = p[1] - cy;
+  return Math.sqrt(ex * ex + ey * ey);
 }
 
-// ── Matching ──────────────────────────────────────────────────────────────
+export function vertexDegrees(edges: [number, number][], pointCount: number): number[] {
+  const degrees = new Array<number>(pointCount).fill(0);
+  for (const [i, j] of edges) {
+    degrees[i]++;
+    degrees[j]++;
+  }
+  return degrees;
+}
 
-function scoreAssignment(
+export function effectiveDist(
+  starNorm: Point2D,
   skelNorm: Point2D[],
-  starNorm: Point2D[],
-  assignment: number[],
+  edges: [number, number][],
+  degrees: number[],
 ): number {
-  let matched = 0;
-  for (let i = 0; i < skelNorm.length; i++) {
-    const j = assignment[i];
-    if (j < 0 || j >= starNorm.length) continue;
-    const dx = skelNorm[i][0] - starNorm[j][0];
-    const dy = skelNorm[i][1] - starNorm[j][1];
-    if (Math.sqrt(dx * dx + dy * dy) <= DISTANCE_THRESHOLD) matched++;
+  let dSeg = Infinity;
+  for (const [i, j] of edges) {
+    const d = pointToSegmentDist(starNorm, skelNorm[i], skelNorm[j]);
+    if (d < dSeg) dSeg = d;
   }
-  return matched / skelNorm.length;
+
+  let dVtx = Infinity;
+  let bestBonus = VERTEX_BONUS_JOINT;
+  for (let k = 0; k < skelNorm.length; k++) {
+    const dx = starNorm[0] - skelNorm[k][0];
+    const dy = starNorm[1] - skelNorm[k][1];
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < dVtx) {
+      dVtx = d;
+      bestBonus = degrees[k] === 1 ? VERTEX_BONUS_ENDPOINT : VERTEX_BONUS_JOINT;
+    }
+  }
+
+  const gaussian = bestBonus * Math.exp(-(dVtx * dVtx) / (VERTEX_SIGMA * VERTEX_SIGMA));
+  return dSeg * (1 - gaussian);
 }
 
-interface TryMatchResult {
-  assignment: number[];
+export function maxPairwiseAngularDist(stars: Star[]): number {
+  let max = 0;
+  for (let i = 0; i < stars.length; i++) {
+    for (let j = i + 1; j < stars.length; j++) {
+      const d = distanceDeg(stars[i].ra, stars[i].dec, stars[j].ra, stars[j].dec);
+      if (d > max) max = d;
+    }
+  }
+  return max;
+}
+
+// ── Constellation star selection ──────────────────────────────────────────
+
+export function selectConstellationStars(
+  skelNorm: Point2D[],
+  edges: [number, number][],
+  degrees: number[],
+  matchedStars: Star[],
+  matchedNorm: Point2D[],
+): Star[] {
+  // Process vertices degree-1 (endpoints) first, then higher degrees
+  const vertexOrder = skelNorm
+    .map((_, i) => i)
+    .sort((a, b) => (degrees[a] === 1 ? 0 : 1) - (degrees[b] === 1 ? 0 : 1));
+
+  const claimed = new Set<number>();
+  const result: Star[] = [];
+
+  for (const vi of vertexOrder) {
+    if (result.length >= MAX_CONSTELLATION_STARS) break;
+
+    const [vx, vy] = skelNorm[vi];
+    let bestScore = Infinity;
+    let bestIdx = -1;
+
+    for (let j = 0; j < matchedStars.length; j++) {
+      if (claimed.has(j)) continue;
+      const dx = matchedNorm[j][0] - vx;
+      const dy = matchedNorm[j][1] - vy;
+      const dVtx = Math.sqrt(dx * dx + dy * dy);
+      const score = dVtx + BRIGHTNESS_WEIGHT * (matchedStars[j].mag / MAX_MAG);
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = j;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      claimed.add(bestIdx);
+      result.push(matchedStars[bestIdx]);
+    }
+  }
+
+  return result;
+}
+
+// ── Core matching ─────────────────────────────────────────────────────────
+
+interface ScoreResult {
   score: number;
+  stars: Star[];
+  constellationStars: Star[];
   skeletonRaDec: { ra: number; dec: number }[];
 }
 
-function tryMatch(skelPoints: Point2D[], candidates: Star[], rotDeg: number): TryMatchResult {
-  const n = Math.max(skelPoints.length, candidates.length);
+function scoreAndMatch(
+  skelPoints: Point2D[],
+  edges: [number, number][],
+  candidates: Star[],
+  rotDeg: number,
+): ScoreResult {
+  // y-flip: LLM uses y=0 top, sky uses Dec increasing upward
+  const flipped: Point2D[] = skelPoints.map(([x, y]) => [x, -y]);
 
-  // Normalise skeleton (rotated) — save real points before padding
-  const skelNorm = normalise(rotate(skelPoints, rotDeg));
-  const realSkelNorm = skelNorm.slice(); // snapshot before padding
+  // Normalise skeleton (rotated)
+  const skelNorm = normalise(rotate(flipped, rotDeg));
 
   // Normalise candidate star positions using flat-sky approx
   const starFlat: Point2D[] = candidates.map((s) => [s.ra, s.dec]);
   const starNorm = normalise(starFlat);
 
-  // Compute star bounding box params for inverse transform (skelNorm → RA/Dec)
+  // Star bounding box params for inverse transform (skelNorm → RA/Dec)
   const starXs = starFlat.map((p) => p[0]);
   const starYs = starFlat.map((p) => p[1]);
   const starMinX = Math.min(...starXs), starMaxX = Math.max(...starXs);
@@ -144,101 +197,131 @@ function tryMatch(skelPoints: Point2D[], candidates: Star[], rotDeg: number): Tr
   const starCx = (starMinX + starMaxX) / 2;
   const starCy = (starMinY + starMaxY) / 2;
 
-  // Pad smaller set to n×n
-  while (skelNorm.length < n) skelNorm.push([999, 999]);
-  while (starNorm.length < n) starNorm.push([999, 999]);
+  const degrees = vertexDegrees(edges, skelPoints.length);
 
-  // Build cost matrix using squared distance — penalises outlier pairings more heavily
-  const cost: number[][] = Array.from({ length: n }, (_, i) =>
-    Array.from({ length: n }, (_, j) => {
-      const dx = skelNorm[i][0] - starNorm[j][0];
-      const dy = skelNorm[i][1] - starNorm[j][1];
-      return dx * dx + dy * dy;
-    }),
-  );
+  // Score each candidate star, tracking its normalised position
+  const matched: Array<{ star: Star; norm: Point2D; d: number }> = [];
+  for (let j = 0; j < candidates.length; j++) {
+    const d = effectiveDist(starNorm[j], skelNorm, edges, degrees);
+    if (d < DISTANCE_THRESHOLD) {
+      matched.push({ star: candidates[j], norm: starNorm[j], d });
+    }
+  }
 
-  const assignment = hungarian(cost);
-  const score = scoreAssignment(
-    skelNorm.slice(0, skelPoints.length),
-    starNorm,
-    assignment.slice(0, skelPoints.length),
+  matched.sort((a, b) => a.d - b.d);
+
+  const score = candidates.length > 0 ? matched.length / candidates.length : 0;
+
+  const constellationStars = selectConstellationStars(
+    skelNorm,
+    edges,
+    degrees,
+    matched.map((m) => m.star),
+    matched.map((m) => m.norm),
   );
 
   // Convert skeleton normalised coords to RA/Dec using star bounding box
-  const skeletonRaDec = realSkelNorm.map(([nx, ny]) => ({
+  const skeletonRaDec = skelNorm.map(([nx, ny]) => ({
     ra: nx * starRange + starCx,
     dec: ny * starRange + starCy,
   }));
 
-  return { assignment: assignment.slice(0, skelPoints.length), score, skeletonRaDec };
+  return { score, stars: matched.map((m) => m.star), constellationStars, skeletonRaDec };
 }
 
-// ── Random patch centre ───────────────────────────────────────────────────
+// ── Seed sweep (single skeleton) ──────────────────────────────────────────
 
-function randomPatchCentre(exclude: Set<string>): { ra: number; dec: number } {
-  for (let i = 0; i < 100; i++) {
-    const ra = Math.random() * 360;
-    const dec = Math.asin(Math.random() * 2 - 1) * (180 / Math.PI);
-    const key = `${Math.round(ra)},${Math.round(dec)}`;
-    if (!exclude.has(key)) {
-      exclude.add(key);
-      return { ra, dec };
+function runSeedSweep(
+  skeleton: Skeleton,
+  catalogue: Star[],
+  excludeSeeds: Set<number>,
+  patchRadius: number,
+): (ScoreResult & { seed: Star }) | null {
+  const { points, edges } = skeleton;
+
+  const seeds = catalogue
+    .filter((s) => s.mag <= SEED_MAX_MAG && !excludeSeeds.has(s.id))
+    .sort((a, b) => a.mag - b.mag);
+
+  let globalBest: (ScoreResult & { seed: Star }) | null = null;
+
+  for (const seed of seeds) {
+    const candidates = catalogue.filter(
+      (s) => distanceDeg(s.ra, s.dec, seed.ra, seed.dec) <= patchRadius,
+    );
+    if (candidates.length < MIN_MATCHED_STARS) continue;
+
+    let best: ScoreResult = { score: 0, stars: [], constellationStars: [], skeletonRaDec: [] };
+
+    for (let r = 0; r < ROTATION_STEPS; r++) {
+      const rotDeg = (r * 360) / ROTATION_STEPS;
+      const result = scoreAndMatch(points, edges, candidates, rotDeg);
+      if (result.score > best.score) best = result;
+    }
+
+    if (!globalBest || best.score > globalBest.score) {
+      globalBest = { ...best, seed };
+    }
+
+    if (best.score >= COVERAGE_THRESHOLD && best.stars.length >= MIN_MATCHED_STARS) {
+      console.log(
+        `[matcher] hit ${(best.score * 100).toFixed(0)}% (${best.stars.length} stars) on seed ${seed.id} mag ${seed.mag.toFixed(2)}`,
+      );
+      break;
     }
   }
-  return { ra: Math.random() * 360, dec: (Math.random() - 0.5) * 160 };
+
+  return globalBest;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
 
 export function match(
   catalogue: Star[],
-  skeleton: Skeleton,
-  excludePatches: Set<string> = new Set(),
+  skeletons: Skeleton[],
+  excludeSeeds: Set<number> = new Set(),
 ): MatchResult | null {
-  const { points, edges } = skeleton;
-  const targetCount = points.length;
+  let globalBest: (ScoreResult & { seed: Star; variantIndex: number }) | null = null;
+  let currentRadius = PATCH_RADIUS_DEG;
 
-  let globalBest: {
-    assignment: number[];
-    score: number;
-    skeletonRaDec: { ra: number; dec: number }[];
-    ra: number;
-    dec: number;
-    candidates: Star[];
-  } | null = null;
-
-  let attempt = 0;
-  for (; attempt < MAX_ATTEMPTS; attempt++) {
-    const { ra, dec } = randomPatchCentre(excludePatches);
-    const candidates = starsInPatch(catalogue, ra, dec, CANDIDATE_COUNT);
-    if (candidates.length < MIN_MATCHED_STARS) continue;
-
-    let best: TryMatchResult & { score: number } = { assignment: [], score: 0, skeletonRaDec: [] };
-
-    for (let r = 0; r < ROTATION_STEPS; r++) {
-      const rotDeg = (r * 360) / ROTATION_STEPS;
-      const result = tryMatch(points, candidates, rotDeg);
-      if (result.score > best.score) best = result;
+  while (true) {
+    for (let i = 0; i < skeletons.length; i++) {
+      const result = runSeedSweep(skeletons[i], catalogue, excludeSeeds, currentRadius);
+      if (!result) continue;
+      if (!globalBest || result.score > globalBest.score) {
+        globalBest = { ...result, variantIndex: i };
+      }
     }
 
-    const matchedCount = Math.round(best.score * points.length);
-    if (best.score >= COVERAGE_THRESHOLD && matchedCount >= MIN_MATCHED_STARS) {
-      console.log(`[matcher] hit ${(best.score * 100).toFixed(0)}% (${matchedCount}/${points.length} stars) on attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
-      const matchedStars = best.assignment.map((j) => candidates[j] ?? candidates[0]);
-      return { stars: matchedStars, edges, patchRA: ra, patchDec: dec, skeletonPoints: best.skeletonRaDec };
-    }
-
-    if (!globalBest || best.score > globalBest.score) {
-      globalBest = { ...best, ra, dec, candidates };
-    }
+    if (globalBest && globalBest.score >= QUALITY_THRESHOLD) break;
+    if (currentRadius >= MAX_PATCH_RADIUS_DEG) break;
+    const next = Math.min(currentRadius + PATCH_RADIUS_STEP, MAX_PATCH_RADIUS_DEG);
+    console.log(
+      `[matcher] score ${globalBest ? (globalBest.score * 100).toFixed(0) + '%' : 'none'} below ${(QUALITY_THRESHOLD * 100).toFixed(0)}%, expanding radius ${currentRadius}° → ${next}°`,
+    );
+    currentRadius = next;
   }
 
-  // No patch hit threshold — return the best match found across all attempts
-  console.log(`[matcher] exhausted ${attempt} attempts, best score: ${((globalBest?.score ?? 0) * 100).toFixed(0)}%`);
-  if (globalBest && globalBest.score > 0) {
-    const matchedStars = globalBest.assignment.map((j) => globalBest!.candidates[j] ?? globalBest!.candidates[0]);
-    return { stars: matchedStars, edges, patchRA: globalBest.ra, patchDec: globalBest.dec, skeletonPoints: globalBest.skeletonRaDec };
-  }
+  if (!globalBest || globalBest.stars.length === 0) return null;
 
-  return null;
+  excludeSeeds.add(globalBest.seed.id);
+
+  console.log(
+    `[matcher] variant ${globalBest.variantIndex} won with ${(globalBest.score * 100).toFixed(0)}%`,
+  );
+
+  const span = maxPairwiseAngularDist(globalBest.stars);
+  console.log(
+    `[matcher] pattern size: ${span.toFixed(1)}° (${Math.round((span / ORION_SPAN_DEG) * 100)}% of Orion)`,
+  );
+
+  return {
+    stars: globalBest.stars,
+    constellationStars: globalBest.constellationStars,
+    edges: skeletons[globalBest.variantIndex].edges,
+    patchRA: globalBest.seed.ra,
+    patchDec: globalBest.seed.dec,
+    skeletonPoints: globalBest.skeletonRaDec,
+    variantIndex: globalBest.variantIndex,
+  };
 }

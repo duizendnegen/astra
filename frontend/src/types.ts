@@ -11,11 +11,13 @@ export interface Skeleton {
 }
 
 export interface MatchResult {
-  stars: Star[];       // matched stars, indexed by skeleton point order
+  stars: Star[];                // on-pattern stars (within edge threshold), ordered by match quality — not skeleton-indexed
+  constellationStars: Star[];  // up to 8 vertex-anchored stars forming the connected constellation
   edges: [number, number][];
-  patchRA: number;     // degrees
-  patchDec: number;    // degrees
+  patchRA: number;              // degrees
+  patchDec: number;             // degrees
   skeletonPoints?: { ra: number; dec: number }[]; // original skeleton contour in sky coords
+  variantIndex?: number;        // which skeleton variant produced this result
 }
 
 export interface ConstellationState {

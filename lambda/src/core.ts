@@ -10,17 +10,34 @@ export const TRIANGLE_FALLBACK: Skeleton = {
 
 const MODEL = 'anthropic/claude-3-5-haiku';
 
-// Step 1 — describe the iconic silhouette in plain language
-export const DESCRIBE_PROMPT = (word: string): string =>
-  `What is the single most iconic, instantly recognisable visual silhouette of "${word}"?
+// Step 1 — describe 3 iconic silhouettes in plain language
+export const DESCRIBE_MULTI_PROMPT = (word: string): string =>
+  `Name 3 different iconic visual silhouettes of "${word}" that would work perfectly as a simple emoji or pictogram.
 
-Describe it in one sentence as if guiding someone to draw it from scratch. Be precise about the positions of key features. Examples:
-- "love" → "A heart: two rounded lobes side-by-side at the top, curving down and inward to meet at a sharp downward point at the bottom center."
-- "dog" → "A dog in left-facing profile: a horizontal oval body in the center, a raised rectangular head with a snout extending left, four short legs hanging down, and a tail curving upward at the right."
-- "eiffel tower" → "The Eiffel Tower: a sharp spire at the top center, two diagonal struts spreading outward to mid-height, then two wider diagonal legs splaying further to a broad rectangular base at the bottom."
-- "lightning bolt" → "A zigzag lightning bolt: a line going down-right, then sharply down-left, then down-right again, ending in a point."
+CRITICAL: Each silhouette must be:
+- Instantly recognisable to any human at a glance — like 🐕 🌙 ❤️ 🗼
+- Drawn from the most natural viewing angle a person would see it
+- Reducible to 8–15 connected dots that capture the essential outline
+- Bold, clean, and unambiguous — no fine detail, no texture, no interior structure
 
-Respond with only the one-sentence description, no preamble.`;
+IMPORTANT rules:
+- Draw from the perspective a person naturally sees it — NOT overhead, NOT a floor plan, NOT a cross-section, NOT a technical diagram
+- Each of the 3 variants should depict a different recognisable aspect of "${word}"
+- Think street sign / emoji / app icon level of simplicity
+
+Bad examples (do NOT do this):
+- "shower" → bathroom floor plan seen from above ✗
+- "house" → architectural floor plan ✗
+- "tree" → botanical cross-section ✗
+- "eiffel tower" → square base with internal lattice detail ✗
+
+Good examples:
+- "shower" → shower head angled toward viewer with water spray arcing downward; OR person silhouette standing under falling water; OR close-up of circular shower rose with water jets
+- "dog" → dog in left-facing profile with body, head, tail; OR front-facing dog face with ears and snout; OR seated dog silhouette
+- "eiffel tower" → narrow tapering tower silhouette: wide arched base, two narrowing tiers, pointed antenna on top; OR just the iconic top half with antenna
+
+Respond with a JSON object: { "descriptions": ["<sentence 1>", "<sentence 2>", "<sentence 3>"] }
+Each sentence should guide someone to draw the silhouette from scratch in 8–15 dots. No preamble.`;
 
 // Step 2 — convert description to connect-the-dots skeleton
 export const DRAW_PROMPT = (description: string): string =>
@@ -85,15 +102,34 @@ export function isValidSkeleton(obj: unknown): obj is Skeleton {
   return true;
 }
 
-export async function callLlm(word: string, apiKey: string): Promise<Skeleton | null> {
-  const description = await llmText(DESCRIBE_PROMPT(word), apiKey);
-  if (!description) return null;
-  const parsed = await llmJson(DRAW_PROMPT(description), apiKey);
-  return isValidSkeleton(parsed) ? parsed : null;
+async function getDescriptions(word: string, apiKey: string): Promise<string[]> {
+  const raw = await llmJson(DESCRIBE_MULTI_PROMPT(word), apiKey);
+  if (
+    typeof raw === 'object' &&
+    raw !== null &&
+    Array.isArray((raw as Record<string, unknown>).descriptions)
+  ) {
+    const descs = (raw as { descriptions: unknown[] }).descriptions
+      .filter((d): d is string => typeof d === 'string' && d.trim().length > 0)
+      .slice(0, 3);
+    if (descs.length > 0) return descs;
+  }
+  return [];
 }
 
-export async function generateSkeleton(word: string, apiKey: string): Promise<Skeleton> {
-  let skeleton = await callLlm(word, apiKey);
-  if (!skeleton) skeleton = await callLlm(word, apiKey);
-  return skeleton ?? TRIANGLE_FALLBACK;
+async function generateVariants(word: string, apiKey: string): Promise<Skeleton[]> {
+  const descriptions = await getDescriptions(word, apiKey);
+  if (descriptions.length === 0) return [];
+
+  const results = await Promise.all(
+    descriptions.map((desc) => llmJson(DRAW_PROMPT(desc), apiKey)),
+  );
+
+  return results.filter(isValidSkeleton);
+}
+
+export async function generateSkeleton(word: string, apiKey: string): Promise<Skeleton[]> {
+  let skeletons = await generateVariants(word, apiKey);
+  if (skeletons.length === 0) skeletons = await generateVariants(word, apiKey);
+  return skeletons.length > 0 ? skeletons : [TRIANGLE_FALLBACK];
 }
