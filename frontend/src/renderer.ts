@@ -6,6 +6,7 @@ const STAR_LINE_COLOR = '#a7c8ff';
 const BG_STAR_MAX_RADIUS = 2.2;
 const MATCHED_STAR_RADIUS = 3.5;
 const DIM_FALLOFF_DEG = 40; // degrees from centre where dimming reaches minimum
+const RESULT_FADE_START = 0.60; // constellation fades in during last 40% of forward transition
 
 let canvas: HTMLCanvasElement;
 let ctx: CanvasRenderingContext2D;
@@ -13,6 +14,7 @@ let projection: d3.GeoProjection;
 let camera: CameraState = { ...LANDING_CAMERA };
 let stars: Star[] = [];
 let constellation: MatchResult | null = null;
+let constellationAlpha: number = 1;
 
 // ── Projection helpers ────────────────────────────────────────────────────
 
@@ -81,10 +83,10 @@ function drawStars(): void {
       alpha = Math.min(1, alpha * 1.6);
       radius *= 1.2;
     } else if (constellation) {
-      // Background tier: dim by distance from constellation centre
+      // Background tier: dim by distance from constellation centre, fades in with constellation
       const dist = distanceDeg(star.ra, star.dec, constellation.patchRA, constellation.patchDec);
       const dimFactor = Math.max(0.08, 1 - dist / DIM_FALLOFF_DEG);
-      alpha *= dimFactor;
+      alpha *= 1 - (1 - dimFactor) * constellationAlpha;
     }
 
     ctx.beginPath();
@@ -109,7 +111,7 @@ function drawConstellation(): void {
     // Draw skeleton edges between original contour points
     ctx.strokeStyle = STAR_LINE_COLOR;
     ctx.lineWidth = 1.5;
-    ctx.globalAlpha = 0.75;
+    ctx.globalAlpha = 0.75 * constellationAlpha;
     for (const [i, j] of edges) {
       const a = skelPositions[i];
       const b = skelPositions[j];
@@ -128,6 +130,7 @@ function drawConstellation(): void {
     const pt = starPositions[idx];
     if (!pt) continue;
     const star = constellationStars[idx];
+    ctx.globalAlpha = constellationAlpha;
     ctx.beginPath();
     ctx.arc(pt[0], pt[1], MATCHED_STAR_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
@@ -145,6 +148,7 @@ function drawConstellation(): void {
     ctx.arc(pt[0], pt[1], magToRadius(star.mag), 0, Math.PI * 2);
     ctx.fillStyle = `rgba(220,226,250,${magToAlpha(star.mag).toFixed(3)})`;
     ctx.fill();
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -158,12 +162,18 @@ export function draw(): void {
 
 // ── Camera animation ──────────────────────────────────────────────────────
 
+export function computeConstellationAlpha(easedProgress: number, fadeStart: number): number {
+  if (fadeStart <= 0) return 1;
+  return Math.min(1, Math.max(0, (easedProgress - fadeStart) / (1 - fadeStart)));
+}
+
 let animFrame: number | null = null;
 
 export function animateTo(
   target: CameraState,
   durationMs: number,
   onComplete?: () => void,
+  fadeStart: number = 0,
 ): void {
   if (animFrame !== null) cancelAnimationFrame(animFrame);
 
@@ -181,6 +191,8 @@ export function animateTo(
       fov: start.fov + (target.fov - start.fov) * e,
     };
 
+    constellationAlpha = computeConstellationAlpha(e, fadeStart);
+
     projection = buildProjection();
     draw();
 
@@ -188,6 +200,7 @@ export function animateTo(
       animFrame = requestAnimationFrame(step);
     } else {
       camera = { ...target };
+      constellationAlpha = 1;
       animFrame = null;
       onComplete?.();
     }
@@ -229,7 +242,8 @@ export function resetCamera(): void {
 }
 
 export function animateToResult(patchRA: number, patchDec: number, onComplete?: () => void): void {
-  animateTo({ ra: patchRA, dec: patchDec, fov: RESULT_FOV }, 2000, onComplete);
+  constellationAlpha = 0;
+  animateTo({ ra: patchRA, dec: patchDec, fov: RESULT_FOV }, 2000, onComplete, RESULT_FADE_START);
 }
 
 export function animateToLanding(): void {
