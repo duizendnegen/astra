@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Astra</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500&family=Manrope:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="sky"></canvas>
+
+  <!-- Landing UI -->
+  <div id="landing">
+    <div class="wordmark">ASTRA</div>
+    <div class="input-group">
+      <label class="input-label">Constellation</label>
+      <input id="word-input" type="text" placeholder="Type a word…" autocomplete="off" spellcheck="false" />
+    </div>
+    <button id="find-btn" disabled>Find</button>
+    <div id="catalogue-status" class="status-hint">Loading star catalogue…</div>
+  </div>
+
+  <!-- Result UI -->
+  <div id="result" hidden>
+    <div id="coord-panel">
+      <div class="coord-item">
+        <span class="coord-label">Declination</span>
+        <span id="coord-dec" class="coord-value"></span>
+      </div>
+      <div class="coord-item">
+        <span class="coord-label">Right Ascension</span>
+        <span id="coord-ra" class="coord-value"></span>
+      </div>
+    </div>
+
+    <div id="overlay">
+      <div id="word-display"></div>
+    </div>
+
+    <div id="actions">
+      <button id="share-btn">Share Link</button>
+      <button id="export-btn">Export PNG</button>
+    </div>
+
+    <button id="close-btn">✕</button>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
