@@ -17,7 +17,7 @@ import path from 'path';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.87');
+export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.80');
 export const THRESHOLD_PHYLOPIC = parseFloat(process.env.THRESHOLD_PHYLOPIC ?? '0.55');
 
 const EMBED_MODEL = 'openai/text-embedding-3-small';
@@ -80,14 +80,13 @@ export function normalise(word: string): string {
   // Lowercase and strip punctuation
   let w = word.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
 
-  // Basic English lemmatisation rules (covers the common cases without a full NLP dep)
-  // compromise.js can be swapped in if more coverage is needed
+  // Conservative plural normalisation only — aggressive suffix rules (ing, tion, er)
+  // were removed because they corrupt non-English words (e.g. "Faultier" → "faulti")
+  // and common English words (e.g. "ring" → "r", "tower" → "tow"). Embeddings handle
+  // morphological variation without explicit stemming.
   w = w
-    .replace(/ies$/, 'y')        // butterflies → butterfly
-    .replace(/(?<=[^aeiou])s$/, '') // towers → tower (not "bus")
-    .replace(/ing$/, '')         // running → runn → handled below
-    .replace(/tion$/, '')
-    .replace(/er$/, '');
+    .replace(/ies$/, 'y')           // butterflies → butterfly
+    .replace(/(?<=[^aeiou])s$/, ''); // cars → car, dogs → dog (not "bus", "gas")
 
   // Re-trim after suffix removal
   w = w.trim();
@@ -305,10 +304,19 @@ export async function retrieveSkeleton(
   const normalised = normalise(word);
   console.log(`[retrieval] "${word}" → normalised: "${normalised}"`);
 
+  // Track the best index result seen across L1 and L3 (for best-cosine fallback)
+  let bestSeen: SearchResult | null = null;
+  function trackBest(results: SearchResult[]) {
+    if (results[0] && (!bestSeen || results[0].similarity > bestSeen.similarity)) {
+      bestSeen = results[0];
+    }
+  }
+
   // L1: embed + search
   const queryVec = await embed(normalised, apiKey);
   if (queryVec) {
     const results = searchIndex(db, queryVec);
+    trackBest(results);
     const best = bestAboveThreshold(results);
     if (best) {
       console.log(`[retrieval] L1 hit: ${best.entry.id} (${best.similarity.toFixed(3)}) ${elapsed()}`);
@@ -343,6 +351,7 @@ export async function retrieveSkeleton(
       const vec = vecs[i];
       if (!vec) continue;
       const results = searchIndex(db, vec);
+      trackBest(results);
       const best = bestAboveThreshold(results);
       if (best) {
         console.log(`[retrieval] L3 hit via "${candidates[i]}": ${best.entry.id} (${best.similarity.toFixed(3)}) ${elapsed()}`);
@@ -385,7 +394,24 @@ export async function retrieveSkeleton(
     console.log(`[retrieval] L4 skeleton null ${elapsed()}`);
   }
 
-  // Fallback
+  // Fallback: use best cosine result seen, or triangle if nothing was found
+  if (bestSeen) {
+    const b = bestSeen as SearchResult;
+    console.log(`[retrieval] using best-cosine fallback: ${b.entry.id} (${b.similarity.toFixed(3)}) ${elapsed()}`);
+    const skeleton = svgToSkeletonWithOpts(b.entry.svg_path);
+    if (skeleton) {
+      return {
+        match: {
+          source: b.entry.source as 'phosphor' | 'phylopic',
+          id: b.entry.id,
+          similarity: b.similarity,
+          layer: 1,
+          svgPath: b.entry.svg_path,
+        },
+        skeletons: [skeleton],
+      };
+    }
+  }
   console.log(`[retrieval] all layers failed — returning triangle fallback ${elapsed()}`);
   return { match: null, skeletons: [TRIANGLE_FALLBACK] };
 }

@@ -25,10 +25,11 @@
     "@aws-sdk/lib-dynamodb": "^3.1019.0",
     "better-sqlite3": "^9.4.3",
     "compromise": "^14.14.4",
+    "polygon-clipping": "^0.15.7",
     "sqlite-vec": "^0.1.9"
   },
   "optionalDependencies": {
     "sqlite-vec-linux-x64": "*",
-    "sqlite-vec-windows-x64": "*"
+    "sqlite-vec-windows-x64": "^0.1.9"
   }
 }

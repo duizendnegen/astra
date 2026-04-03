@@ -8,6 +8,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@resvg/resvg-js-win32-x64-msvc": "^2.6.2",
     "canvas": "^3.1.0",
     "d3-geo": "^3.1.1"
   },

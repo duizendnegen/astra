@@ -5,9 +5,9 @@
  * constellation matching. Pipeline:
  *   1. Parse <path> elements + resolve transforms → absolute commands
  *   2. Normalise coordinates to [0,1] via viewBox
- *   3. Sample a dense point cloud (100–500 pts) with curvature weighting
+ *   3. Sample dense polygon per subpath, compute boolean union, extract outer contour
  *   4. Simplify to 15–40 pts via a swappable algorithm (default: RDP)
- *   5. Derive edges from path continuity
+ *   5. Derive edges as a simple closed loop
  *
  * Sub-step results are cached in memory (and optionally on disk for dev).
  */
@@ -15,6 +15,7 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import polygonClipping from 'polygon-clipping';
 import type { Skeleton } from './core.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -33,9 +34,7 @@ export interface SvgToSkeletonOptions {
 }
 
 interface SampledPath {
-  points: Point[];
-  closedLoops: boolean[];    // whether each sub-path was closed (Z command)
-  subPathBoundaries: number[]; // index where each new sub-path starts
+  subpaths: Point[][];       // dense points per subpath (each subpath is its own array)
 }
 
 // ── Disk cache ────────────────────────────────────────────────────────────────
@@ -242,46 +241,84 @@ function sampleCubic(
 
 function samplePath(svgPathD: string): SampledPath {
   const segments = parseSvgD(svgPathD);
-  const allPoints: Point[] = [];
-  const subPathBoundaries: number[] = [0];
-  const closedLoops: boolean[] = [];
+  const subpaths: Point[][] = [];
+  let current: Point[] = [];
 
-  let cx = 0, cy = 0, subPathClosed = false;
+  let cx = 0, cy = 0;
 
   for (const seg of segments) {
     switch (seg.cmd) {
       case 'M': {
-        if (allPoints.length > subPathBoundaries[subPathBoundaries.length - 1]) {
-          subPathBoundaries.push(allPoints.length);
-          closedLoops.push(subPathClosed);
-        }
+        if (current.length > 0) subpaths.push(current);
+        current = [];
         cx = seg.args[0]; cy = seg.args[1];
-        allPoints.push([cx, cy]);
-        subPathClosed = false;
+        current.push([cx, cy]);
         break;
       }
       case 'L': {
         cx = seg.args[0]; cy = seg.args[1];
-        allPoints.push([cx, cy]);
+        current.push([cx, cy]);
         break;
       }
       case 'C': {
         const [x1, y1, x2, y2, x, y] = seg.args;
         const pts = sampleCubic(cx, cy, x1, y1, x2, y2, x, y);
-        allPoints.push(...pts.slice(1)); // skip first (already added)
+        current.push(...pts.slice(1));
         cx = x; cy = y;
         break;
       }
       case 'Z': {
-        subPathClosed = true;
         break;
       }
     }
   }
 
-  closedLoops.push(subPathClosed);
+  if (current.length > 0) subpaths.push(current);
 
-  return { points: allPoints, closedLoops, subPathBoundaries };
+  return { subpaths };
+}
+
+// ── Outline contour extraction ────────────────────────────────────────────────
+
+function polygonArea(ring: Point[]): number {
+  let area = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    area += ring[j][0] * ring[i][1];
+    area -= ring[i][0] * ring[j][1];
+  }
+  return Math.abs(area) / 2;
+}
+
+/** Compute the boolean union of all subpath polygons and return the outer
+ *  boundary of the largest resulting region. Falls back to concatenated
+ *  points on error. */
+export function extractOutlineContour(subpathPolygons: Point[][]): Point[] {
+  if (subpathPolygons.length === 0) return [];
+  if (subpathPolygons.length === 1) return subpathPolygons[0];
+
+  try {
+    // polygon-clipping expects MultiPolygon: [[[ring]]]
+    const multiPolygons: polygonClipping.MultiPolygon[] = subpathPolygons.map(
+      (pts) => [[[...pts.map(([x, y]) => [x, y] as [number, number])]]],
+    );
+    const [first, ...rest] = multiPolygons;
+    const result = polygonClipping.union(first, ...rest);
+    if (!result || result.length === 0) throw new Error('empty union');
+
+    // Pick the polygon with the largest outer ring
+    let best: Point[] = [];
+    let bestArea = -1;
+    for (const poly of result) {
+      const outer = poly[0]; // index 0 = outer ring
+      const pts = outer.map(([x, y]) => [x, y] as Point);
+      const area = polygonArea(pts);
+      if (area > bestArea) { bestArea = area; best = pts; }
+    }
+    return best;
+  } catch {
+    console.warn('[svg-to-skeleton] polygon union failed, falling back to concatenated points');
+    return subpathPolygons.flat();
+  }
 }
 
 // ── ViewBox normalisation ─────────────────────────────────────────────────────
@@ -387,61 +424,12 @@ function simplifyToTarget(
 
 // ── Edge derivation ───────────────────────────────────────────────────────────
 
-/** Given original sub-path boundaries and simplified points, derive edges by
- *  mapping simplified points back to the original and connecting consecutives. */
-function deriveEdges(
-  simplifiedPoints: Point[],
-  originalSampled: SampledPath,
-  closedLoops: boolean[],
-): [number, number][] {
-  // For each simplified point, find the nearest original point and its sub-path index
-  const boundaries = originalSampled.subPathBoundaries;
-
-  function subPathOf(origIdx: number): number {
-    for (let s = boundaries.length - 1; s >= 0; s--) {
-      if (origIdx >= boundaries[s]) return s;
-    }
-    return 0;
-  }
-
-  // Map each simplified point to its nearest original point index
-  const origIndices = simplifiedPoints.map((sp) => {
-    let best = 0, bestDist = Infinity;
-    for (let i = 0; i < originalSampled.points.length; i++) {
-      const [ox, oy] = originalSampled.points[i];
-      const d = (ox - sp[0]) ** 2 + (oy - sp[1]) ** 2;
-      if (d < bestDist) { bestDist = d; best = i; }
-    }
-    return best;
-  });
-
+/** Build closed-loop edges from a single outer contour: [i, i+1] for all points,
+ *  plus [last, 0] to close the loop. */
+function buildLoopEdges(n: number): [number, number][] {
   const edges: [number, number][] = [];
-
-  for (let i = 0; i < simplifiedPoints.length - 1; i++) {
-    const subA = subPathOf(origIndices[i]);
-    const subB = subPathOf(origIndices[i + 1]);
-    if (subA === subB) {
-      edges.push([i, i + 1]);
-    }
-    // Don't bridge different sub-paths
-  }
-
-  // Close loops: connect last point back to first if the sub-path was closed
-  // and both are in the same sub-path
-  for (let s = 0; s < closedLoops.length; s++) {
-    if (!closedLoops[s]) continue;
-    // Find first and last simplified point in this sub-path
-    const inSubPath = origIndices
-      .map((oi, si) => ({ si, sub: subPathOf(oi) }))
-      .filter(({ sub }) => sub === s)
-      .map(({ si }) => si);
-    if (inSubPath.length >= 2) {
-      const first = inSubPath[0];
-      const last = inSubPath[inSubPath.length - 1];
-      if (first !== last) edges.push([last, first]);
-    }
-  }
-
+  for (let i = 0; i < n - 1; i++) edges.push([i, i + 1]);
+  if (n >= 2) edges.push([n - 1, 0]);
   return edges;
 }
 
@@ -518,7 +506,7 @@ export function svgToSkeleton(
   } = opts;
 
   const hash = svgHash(svgOrPath);
-  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}`;
+  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__outline-v1`;
 
   // Check skeleton cache
   if (skeletonCache.has(skelKey)) return skeletonCache.get(skelKey)!;
@@ -527,43 +515,50 @@ export function svgToSkeleton(
     if (cached) { skeletonCache.set(skelKey, cached); return cached; }
   }
 
-  // Step 1: sample (cached by svgHash)
+  // Step 1: sample each subpath separately (cached by svgHash)
   let sampled = sampleCache.get(hash);
   if (!sampled) {
-    // Detect whether input is a full SVG or a bare path d
     const isSvg = svgOrPath.trim().startsWith('<');
-    let combinedD: string;
+    let allPathDs: string[];
     if (isSvg) {
-      const pathDs = extractSvgPaths(svgOrPath);
-      if (pathDs.length === 0) return null;
-      combinedD = pathDs.join(' ');
+      allPathDs = extractSvgPaths(svgOrPath);
+      if (allPathDs.length === 0) return null;
     } else {
-      combinedD = svgOrPath;
+      allPathDs = [svgOrPath];
     }
-    sampled = samplePath(combinedD);
+    // Collect all subpath polygons across all <path> elements
+    const subpaths: Point[][] = [];
+    for (const d of allPathDs) {
+      subpaths.push(...samplePath(d).subpaths);
+    }
+    sampled = { subpaths };
     sampleCache.set(hash, sampled);
     if (diskCacheDir) writeDiskCache(diskCacheDir, `${hash}__sample`, sampled);
   }
 
-  if (sampled.points.length === 0) return null;
+  if (sampled.subpaths.length === 0) return null;
 
   // Step 2: normalise coordinates
+  const allRawPoints = sampled.subpaths.flat();
   let vb = extractViewBox(svgOrPath);
-  if (!vb) vb = boundingBox(sampled.points);
+  if (!vb) vb = boundingBox(allRawPoints);
   const [,, w, h] = vb;
   if (w < 1e-6 || h < 1e-6) return null;
 
-  const normOriginal = normalisePoints(sampled.points, vb);
-  const normSampled: SampledPath = { ...sampled, points: normOriginal };
+  const normSubpaths = sampled.subpaths.map((pts) => normalisePoints(pts, vb!));
 
-  // Step 3: simplify
+  // Step 3: extract outer boundary contour via boolean union
+  const contour = extractOutlineContour(normSubpaths);
+  if (contour.length === 0) return null;
+
+  // Step 4: simplify
   const { points: simplified } = simplifyToTarget(
-    normOriginal, simplifyFn, initialEpsilon, targetMin, targetMax,
+    contour, simplifyFn, initialEpsilon, targetMin, targetMax,
   );
   if (simplified.length < 3) return null;
 
-  // Step 4: derive edges
-  const edges = deriveEdges(simplified, normSampled, sampled.closedLoops);
+  // Step 5: build closed-loop edges
+  const edges = buildLoopEdges(simplified.length);
 
   const skeleton: Skeleton = { points: simplified as [number, number][], edges };
   skeletonCache.set(skelKey, skeleton);
