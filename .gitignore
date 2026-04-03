@@ -13,8 +13,10 @@ out/
 .env.*.local
 .claude/settings.local.json
 
-# Data / large files
+# Data / large files (keep .gitkeep placeholder files)
 data/
+!data/.gitkeep
+data/l5-cache/
 *.csv
 *.json.gz
 .playwright-mcp/

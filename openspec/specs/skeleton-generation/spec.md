@@ -8,26 +8,30 @@ The system SHALL expose a `POST /api/skeleton` endpoint accepting `{ "word": str
 - **THEN** the response contains `{ skeletons: [...] }` with 1–3 valid skeleton objects
 
 ### Requirement: LLM prompt and response schema
-The Lambda SHALL use a two-step LLM pipeline: a single `DESCRIBE_MULTI` call returning a JSON array of 3 iconic descriptions, followed by 3 parallel `DRAW` calls. The `DESCRIBE_MULTI` prompt SHALL instruct the LLM to describe 3 distinct iconic silhouettes from the natural human viewing angle, as an illustrator or emoji designer would draw them. Overhead views, floor plans, and cross-sections SHALL be explicitly discouraged.
+The Lambda SHALL use the retrieval-first pipeline (L0→L5) as the primary skeleton generation strategy. An LLM SHALL only be called at L3 (concept mapping, one call returning candidate nouns) or L4 (SVG generation, last resort). The previous two-step DESCRIBE_MULTI + DRAW pipeline is replaced.
 
-#### Scenario: Concrete word produces illustrator-perspective variants
-- **WHEN** the word is a concrete object
-- **THEN** the 3 descriptions each depict a different recognisable aspect from a human-eye viewpoint, not a technical overhead view
+#### Scenario: Concrete word produces skeleton via index
+- **WHEN** the word is a concrete object present in the icon index (e.g. "wolf", "guitar")
+- **THEN** no LLM call is made and the skeleton is derived from the matched SVG
 
-#### Scenario: Three DRAW calls run in parallel
-- **WHEN** 3 valid descriptions are returned
-- **THEN** all 3 DRAW calls are initiated simultaneously via Promise.all
+#### Scenario: Abstract word reaches LLM at L3
+- **WHEN** L1 embedding search does not produce a confident match
+- **THEN** one LLM call is made to L3 for concept mapping, and the result is used to re-query the index
 
 ### Requirement: DynamoDB skeleton cache
-The system SHALL check DynamoDB for a cached skeleton array before calling the LLM. On a cache miss the full `{ skeletons: Skeleton[] }` result SHALL be stored after generation. Cache entries do not expire.
+The system SHALL check DynamoDB for a cached entry before running the pipeline. Cache entries SHALL use the extended schema: `{ word, match: { source, id, similarity, layer, svgPath }, skeletons }`. On a cache miss the full extended entry SHALL be stored after generation. Cache entries without a `match` field (written by the previous pipeline) SHALL be treated as cache misses and regenerated.
 
 #### Scenario: Cache hit returns skeleton array
-- **WHEN** a word has been requested before
-- **THEN** the cached `{ skeletons: [...] }` is returned without an LLM call
+- **WHEN** a word has a valid extended cache entry
+- **THEN** `skeletons` is returned without running the pipeline
 
-#### Scenario: Cache miss triggers parallel generation
-- **WHEN** no cached skeleton array exists for the word
-- **THEN** the multi-variant pipeline runs, the result is stored in DynamoDB, and the skeleton array is returned
+#### Scenario: Legacy cache entry triggers regeneration
+- **WHEN** a cache entry exists but has no `match` field
+- **THEN** the pipeline runs, the result overwrites the old entry, and the new skeletons are returned
+
+#### Scenario: Cache miss triggers pipeline
+- **WHEN** no cache entry exists for the word
+- **THEN** the full L0–L5 pipeline runs and the extended result is stored in DynamoDB
 
 ### Requirement: Retry and triangle fallback
 On a malformed or schema-invalid LLM response the Lambda SHALL retry the full pipeline once. If all variants from both attempts are invalid, the endpoint SHALL return `{ skeletons: [TRIANGLE_FALLBACK] }` with HTTP 200.

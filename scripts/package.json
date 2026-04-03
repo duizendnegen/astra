@@ -1,0 +1,21 @@
+{
+  "name": "astra-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-index": "tsx build-index.ts"
+  },
+  "devDependencies": {
+    "@phosphor-icons/core": "^2.1.1",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "sqlite-vec": "^0.1.6",
+    "sqlite-vec-windows-x64": "^0.1.9"
+  }
+}

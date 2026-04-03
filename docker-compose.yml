@@ -6,8 +6,11 @@ services:
     env_file:
       - path: .env.local
         required: false
+    environment:
+      - INDEX_PATH=/data/icon-index.sqlite
     volumes:
       - ./lambda/src:/app/src
+      - ./data:/data
 
   frontend:
     build: ./frontend

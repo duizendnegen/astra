@@ -3,17 +3,32 @@
 // Reads OPENROUTER_API_KEY from environment (via .env.local in project root).
 
 import http from 'http';
-import { generateSkeleton } from './core';
+import path from 'path';
+import { retrieveSkeleton, getSharedIndex } from './retrieval.js';
+import type { PipelineResult } from './retrieval.js';
 
 const PORT = 3001;
 const API_KEY = process.env.OPENROUTER_API_KEY ?? '';
+// Default: data/ lives one level above the lambda/ working directory
+const INDEX_PATH = process.env.INDEX_PATH ?? path.resolve(process.cwd(), '..', 'data', 'icon-index.sqlite');
 
 if (!API_KEY) {
   console.warn('[local] OPENROUTER_API_KEY not set — LLM calls will fail. Set it in .env.local.');
 }
 
-// In-memory skeleton cache (keyed by normalised word)
-const cache = new Map<string, object>();
+// Open SQLite index once at startup
+let db: ReturnType<typeof getSharedIndex>;
+try {
+  db = getSharedIndex(INDEX_PATH);
+  console.log(`[local] Icon index loaded from ${INDEX_PATH}`);
+} catch (err) {
+  console.error(`[local] Failed to open icon index at ${INDEX_PATH}: ${err}`);
+  console.error('[local] Run: cd scripts && npm install && OPENROUTER_API_KEY=<key> npx tsx build-index.ts');
+  process.exit(1);
+}
+
+// In-memory cache (keyed by word — retrieval pipeline is deterministic for same index)
+const cache = new Map<string, PipelineResult>();
 
 const server = http.createServer(async (req, res) => {
   // CORS for local Vite dev server
@@ -50,17 +65,19 @@ const server = http.createServer(async (req, res) => {
 
   if (cache.has(word)) {
     console.log(`[local] cache hit: ${word}`);
+    const cached = cache.get(word)!;
     res.writeHead(200);
-    res.end(JSON.stringify(cache.get(word)));
+    res.end(JSON.stringify({ skeletons: cached.skeletons, match: cached.match }));
     return;
   }
 
-  console.log(`[local] generating skeleton: ${word}`);
-  const skeletons = await generateSkeleton(word, API_KEY);
-  const payload = { skeletons };
-  cache.set(word, payload);
+  console.log(`[local] retrieving skeleton: ${word}`);
+  const result = await retrieveSkeleton(word, db, API_KEY);
+  cache.set(word, result);
+
+  console.log(`[local] "${word}" → layer ${result.match?.layer ?? 'fallback'}, source: ${result.match?.source ?? 'none'}`);
   res.writeHead(200);
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify({ skeletons: result.skeletons, match: result.match }));
 });
 
 server.listen(PORT, () => {

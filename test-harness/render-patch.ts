@@ -1,4 +1,4 @@
-import { createCanvas } from 'canvas';
+import { createCanvas, Image, type CanvasRenderingContext2D } from 'canvas';
 import { geoStereographic } from 'd3-geo';
 
 // ── Types (inlined to avoid importing DOM-coupled frontend types) ──────────
@@ -31,12 +31,273 @@ export interface RenderOpts {
   width: number;
   height: number;
   patchRadiusDeg: number;
+  renderMode?: 'skeleton' | 'stars';
+}
+
+// ── SVG path tokeniser (mirrors lambda/src/svg-to-skeleton.ts) ─────────────
+
+function tokeniseArgs(raw: string): number[] {
+  const nums: number[] = [];
+  const re = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) nums.push(Number(m[0]));
+  return nums;
+}
+
+function extractAttrLocal(attrs: string, name: string): string | null {
+  let i = 0;
+  while (i < attrs.length) {
+    while (i < attrs.length && /\s/.test(attrs[i])) i++;
+    if (i >= attrs.length) break;
+    const nameStart = i;
+    while (i < attrs.length && !/[\s=/>]/.test(attrs[i])) i++;
+    const attrName = attrs.slice(nameStart, i);
+    while (i < attrs.length && /[\s]/.test(attrs[i])) i++;
+    if (i < attrs.length && attrs[i] === '=') {
+      i++;
+      while (i < attrs.length && /[\s]/.test(attrs[i])) i++;
+      const quote = attrs[i];
+      if (quote === '"' || quote === "'") {
+        i++;
+        const valueStart = i;
+        while (i < attrs.length && attrs[i] !== quote) i++;
+        const value = attrs.slice(valueStart, i);
+        i++;
+        if (attrName === name) return value;
+      } else {
+        const valueStart = i;
+        while (i < attrs.length && !/\s/.test(attrs[i])) i++;
+        if (attrName === name) return attrs.slice(valueStart, i);
+      }
+    }
+  }
+  return null;
+}
+
+/** Draw an SVG string onto a canvas context, scaled to fit the given size. */
+export function renderSvgPanel(svgString: string, size: number): Buffer {
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, size, size);
+
+  // Extract viewBox
+  const vbMatch = svgString.match(/viewBox=["']([^"']+)["']/);
+  let vbX = 0, vbY = 0, vbW = 256, vbH = 256;
+  if (vbMatch) {
+    const parts = vbMatch[1].split(/[\s,]+/).map(Number);
+    if (parts.length >= 4) [vbX, vbY, vbW, vbH] = parts;
+  }
+  const scale = Math.min(size / vbW, size / vbH) * 0.9;
+  const offX = (size - vbW * scale) / 2;
+  const offY = (size - vbH * scale) / 2;
+
+  const toX = (x: number) => offX + (x - vbX) * scale;
+  const toY = (y: number) => offY + (y - vbY) * scale;
+
+  // Extract and draw all path elements
+  let pos = 0;
+  while (pos < svgString.length) {
+    const start = svgString.indexOf('<path', pos);
+    if (start === -1) break;
+    const nextCh = svgString[start + 5];
+    if (nextCh && /[a-zA-Z0-9_-]/.test(nextCh)) { pos = start + 5; continue; }
+    const tagEnd = svgString.indexOf('>', start + 5);
+    if (tagEnd === -1) break;
+    const d = extractAttrLocal(svgString.slice(start + 5, tagEnd), 'd');
+    if (d) drawSvgPath(ctx, d, toX, toY);
+    pos = tagEnd + 1;
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
+function drawSvgPath(ctx: CanvasRenderingContext2D, d: string, toX: (x: number) => number, toY: (y: number) => number): void {
+  const re = /([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)/g;
+  let m: RegExpExecArray | null;
+  let cx = 0, cy = 0, startX = 0, startY = 0;
+
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(160, 200, 255, 0.85)';
+  ctx.lineWidth = 1.2;
+  ctx.fillStyle = 'rgba(80, 120, 200, 0.15)';
+
+  while ((m = re.exec(d)) !== null) {
+    const cmd = m[1];
+    const args = tokeniseArgs(m[2]);
+    const isRel = cmd === cmd.toLowerCase();
+    const ax = (i: number) => isRel ? cx + args[i] : args[i];
+    const ay = (i: number) => isRel ? cy + args[i] : args[i];
+
+    switch (cmd.toUpperCase()) {
+      case 'M': {
+        for (let i = 0; i < args.length; i += 2) {
+          const x = ax(i), y = ay(i);
+          if (i === 0) { ctx.moveTo(toX(x), toY(y)); startX = x; startY = y; }
+          else ctx.lineTo(toX(x), toY(y));
+          cx = x; cy = y;
+        }
+        break;
+      }
+      case 'L': {
+        for (let i = 0; i < args.length; i += 2) {
+          const x = ax(i), y = ay(i);
+          ctx.lineTo(toX(x), toY(y));
+          cx = x; cy = y;
+        }
+        break;
+      }
+      case 'H': for (const v of args) { const x = isRel ? cx + v : v; ctx.lineTo(toX(x), toY(cy)); cx = x; } break;
+      case 'V': for (const v of args) { const y = isRel ? cy + v : v; ctx.lineTo(toX(cx), toY(y)); cy = y; } break;
+      case 'C': {
+        for (let i = 0; i < args.length; i += 6) {
+          ctx.bezierCurveTo(toX(ax(i)), toY(ay(i+1)), toX(ax(i+2)), toY(ay(i+3)), toX(ax(i+4)), toY(ay(i+5)));
+          cx = ax(i+4); cy = ay(i+5);
+        }
+        break;
+      }
+      case 'S': {
+        for (let i = 0; i < args.length; i += 4) {
+          ctx.bezierCurveTo(toX(cx), toY(cy), toX(ax(i)), toY(ay(i+1)), toX(ax(i+2)), toY(ay(i+3)));
+          cx = ax(i+2); cy = ay(i+3);
+        }
+        break;
+      }
+      case 'Q': {
+        for (let i = 0; i < args.length; i += 4) {
+          ctx.quadraticCurveTo(toX(ax(i)), toY(ay(i+1)), toX(ax(i+2)), toY(ay(i+3)));
+          cx = ax(i+2); cy = ay(i+3);
+        }
+        break;
+      }
+      case 'A': {
+        // Approximate arc with a line to endpoint
+        for (let i = 0; i < args.length; i += 7) {
+          const x = ax(i+5), y = ay(i+6);
+          ctx.lineTo(toX(x), toY(y));
+          cx = x; cy = y;
+        }
+        break;
+      }
+      case 'Z': ctx.closePath(); ctx.moveTo(toX(startX), toY(startY)); cx = startX; cy = startY; break;
+    }
+  }
+  ctx.fill();
+  ctx.stroke();
+}
+
+/** Render skeleton points and edges on a dark background (0-1 normalised coords). */
+export function renderSkeletonPanel(points: [number, number][], edges: [number, number][], size: number): Buffer {
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, size, size);
+
+  const pad = size * 0.08;
+  const s = size - 2 * pad;
+  const px = (x: number) => pad + x * s;
+  const py = (y: number) => pad + y * s;
+
+  if (points.length === 0) {
+    ctx.fillStyle = '#444';
+    ctx.font = `${Math.round(size * 0.07)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('no skeleton', size / 2, size / 2);
+    return canvas.toBuffer('image/png');
+  }
+
+  // Draw edges
+  ctx.strokeStyle = 'rgba(100, 160, 255, 0.6)';
+  ctx.lineWidth = 1;
+  for (const [i, j] of edges) {
+    const a = points[i], b = points[j];
+    if (!a || !b) continue;
+    ctx.beginPath();
+    ctx.moveTo(px(a[0]), py(a[1]));
+    ctx.lineTo(px(b[0]), py(b[1]));
+    ctx.stroke();
+  }
+
+  // Draw points
+  ctx.fillStyle = '#88bbff';
+  for (const [x, y] of points) {
+    ctx.beginPath();
+    ctx.arc(px(x), py(y), 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
+/** Combine SVG, skeleton, and constellation into a 3-panel composite image. */
+export function renderComposite(
+  svgString: string | null,
+  skeleton: { points: [number, number][]; edges: [number, number][] } | null,
+  constellationBuf: Buffer,
+  panelSize: number,
+): Buffer {
+  const w = panelSize * 3;
+  const h = panelSize;
+  const canvas = createCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#05050f';
+  ctx.fillRect(0, 0, w, h);
+
+  // Panel 1: SVG shape
+  if (svgString) {
+    const p1 = renderSvgPanel(svgString, panelSize);
+    const img1 = new Image();
+    img1.src = p1;
+    ctx.drawImage(img1, 0, 0);
+  } else {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, panelSize, panelSize);
+    ctx.fillStyle = '#444';
+    ctx.font = `${Math.round(panelSize * 0.07)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('no SVG', panelSize / 2, panelSize / 2);
+  }
+
+  // Panel 2: skeleton
+  if (skeleton) {
+    const p2 = renderSkeletonPanel(skeleton.points, skeleton.edges, panelSize);
+    const img2 = new Image();
+    img2.src = p2;
+    ctx.drawImage(img2, panelSize, 0);
+  }
+
+  // Panel 3: constellation
+  const img3 = new Image();
+  img3.src = constellationBuf;
+  ctx.drawImage(img3, panelSize * 2, 0);
+
+  // Dividers
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(panelSize, 0); ctx.lineTo(panelSize, h);
+  ctx.moveTo(panelSize * 2, 0); ctx.lineTo(panelSize * 2, h);
+  ctx.stroke();
+
+  // Labels
+  ctx.fillStyle = '#666';
+  ctx.font = `${Math.round(panelSize * 0.055)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('SVG', panelSize * 0.5, 4);
+  ctx.fillText('skeleton', panelSize * 1.5, 4);
+  ctx.fillText('constellation', panelSize * 2.5, 4);
+
+  return canvas.toBuffer('image/png');
 }
 
 // ── Renderer ──────────────────────────────────────────────────────────────
 
 export function renderPatch(result: WordResult, opts: RenderOpts): Buffer {
-  const { width: w, height: h, patchRadiusDeg } = opts;
+  const { width: w, height: h, patchRadiusDeg, renderMode = 'skeleton' } = opts;
   const canvas = createCanvas(w, h);
   const ctx = canvas.getContext('2d');
 
@@ -83,21 +344,41 @@ export function renderPatch(result: WordResult, opts: RenderOpts): Buffer {
     ctx.fill();
   }
 
-  // Skeleton edges
-  if (result.skeletonPoints.length > 0 && result.edges.length > 0) {
+  // Constellation / skeleton edges
+  if (result.edges.length > 0) {
     ctx.strokeStyle = 'rgba(100, 160, 255, 0.55)';
     ctx.lineWidth = 1;
-    for (const [i, j] of result.edges) {
-      const a = result.skeletonPoints[i];
-      const b = result.skeletonPoints[j];
-      if (!a || !b) continue;
-      const pa = proj([a.ra, a.dec]);
-      const pb = proj([b.ra, b.dec]);
-      if (!pa || !pb) continue;
-      ctx.beginPath();
-      ctx.moveTo(pa[0], pa[1]);
-      ctx.lineTo(pb[0], pb[1]);
-      ctx.stroke();
+
+    if (renderMode === 'stars' && result.constellationStarIds.length > 0) {
+      // Draw lines between actual constellation star positions
+      const starById = new Map(result.patchStars.map((s) => [s.id, s]));
+      const constStars = result.constellationStarIds.map((id) => starById.get(id));
+      for (const [i, j] of result.edges) {
+        if (i >= constStars.length || j >= constStars.length) continue;
+        const a = constStars[i], b = constStars[j];
+        if (!a || !b) continue;
+        const pa = proj([a.ra, a.dec]);
+        const pb = proj([b.ra, b.dec]);
+        if (!pa || !pb) continue;
+        ctx.beginPath();
+        ctx.moveTo(pa[0], pa[1]);
+        ctx.lineTo(pb[0], pb[1]);
+        ctx.stroke();
+      }
+    } else if (result.skeletonPoints.length > 0) {
+      // Draw lines between skeleton contour points
+      for (const [i, j] of result.edges) {
+        const a = result.skeletonPoints[i];
+        const b = result.skeletonPoints[j];
+        if (!a || !b) continue;
+        const pa = proj([a.ra, a.dec]);
+        const pb = proj([b.ra, b.dec]);
+        if (!pa || !pb) continue;
+        ctx.beginPath();
+        ctx.moveTo(pa[0], pa[1]);
+        ctx.lineTo(pb[0], pb[1]);
+        ctx.stroke();
+      }
     }
   }
 

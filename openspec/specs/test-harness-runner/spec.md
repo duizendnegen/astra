@@ -1,11 +1,22 @@
 ## Requirements
 
 ### Requirement: Word list
-The harness SHALL maintain a word list in `test-harness/words.ts` covering ~40 words across three categories: concrete (e.g. potato, dog, rocket), moderate (e.g. wave, skull, butterfly), and abstract (e.g. love, desire, chaos). The list SHALL always be run in full; subsetting is not supported.
+The harness SHALL maintain a word list in `test-harness/words.ts` organised into five categories that exercise distinct pipeline layers. The list SHALL always be run in full; subsetting is not supported.
+
+Categories:
+- **A — direct index match** (should hit L1): wolf, eagle, mushroom, guitar, crown, anchor, bicycle, butterfly, shark, telescope, sloth, oak
+- **B — near-match** (should hit L1 via embedding proximity): hound, automobile, spectacles
+- **C — concept mapping + translation** (should hit L3): justice, Beethoven, capitalism, melancholy, pirate, Faultier, Löwe, Fernsehturm
+- **D — no index match** (should fall through to L4): eternity, quantum, bureaucracy, serendipity
+- **E — edge cases** (multiple valid shapes or cross-source candidates): mercury, star
 
 #### Scenario: Word list is imported by the runner
 - **WHEN** `run.ts` starts
-- **THEN** it imports the word list from `words.ts` and processes every word
+- **THEN** it imports the word list from `words.ts` and processes every word across all categories
+
+#### Scenario: Category metadata available in results
+- **WHEN** the runner completes
+- **THEN** each entry in `results.json` includes the word's category (A–E) and the pipeline layer that fired (1, 3, 4, or "fallback")
 
 ### Requirement: Fixture caching
 The harness SHALL store skeleton fixtures in `test-harness/fixtures/{word}.json`, each containing `{ skeletons: Skeleton[] }` matching the response shape of `POST /api/skeleton`. Fixture files SHALL be committed to git.
