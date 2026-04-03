@@ -108,14 +108,13 @@ function drawConstellation(): void {
   // Project constellation star positions
   const starPositions: ([number, number] | null)[] = constellationStars.map((s) => project(s.ra, s.dec));
 
-  if (skeletonPoints && skeletonPoints.length > 0) {
-    // Project skeleton contour points
-    const skelPositions: ([number, number] | null)[] = skeletonPoints.map((p) => project(p.ra, p.dec));
+  ctx.strokeStyle = STAR_LINE_COLOR;
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.75 * constellationAlpha;
 
-    // Draw skeleton edges between original contour points
-    ctx.strokeStyle = STAR_LINE_COLOR;
-    ctx.lineWidth = 1.5;
-    ctx.globalAlpha = 0.75 * constellationAlpha;
+  if (skeletonPoints && skeletonPoints.length > 0) {
+    // Project skeleton contour points and draw edges between them
+    const skelPositions: ([number, number] | null)[] = skeletonPoints.map((p) => project(p.ra, p.dec));
     for (const [i, j] of edges) {
       const a = skelPositions[i];
       const b = skelPositions[j];
@@ -125,9 +124,9 @@ function drawConstellation(): void {
       ctx.lineTo(b[0], b[1]);
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
-
   }
+
+  ctx.globalAlpha = 1;
 
   // Draw constellation star dots on top
   for (let idx = 0; idx < constellationStars.length; idx++) {

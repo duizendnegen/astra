@@ -12,7 +12,7 @@ export interface Skeleton {
 
 export interface MatchResult {
   stars: Star[];                // on-pattern stars (within edge threshold), ordered by match quality — not skeleton-indexed
-  constellationStars: Star[];  // up to 8 vertex-anchored stars forming the connected constellation
+  constellationStars: Star[];  // vertex-indexed constellation stars (one per skeleton vertex for skeleton-shape; degree-sorted for other models)
   edges: [number, number][];
   patchRA: number;              // degrees
   patchDec: number;             // degrees

@@ -1,0 +1,1 @@
+<!-- Out of scope: skeleton generation (LLM prompts, lambda/src/core.ts) is not modified in this change. -->

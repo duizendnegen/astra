@@ -77,22 +77,21 @@ function distanceDeg(ra1: number, dec1: number, ra2: number, dec2: number): numb
   return (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 180) / Math.PI;
 }
 
-const VALID_MODELS: ModelName[] = ['simple', 'vertex', 'spread', 'vertex-penalty'];
+const VALID_MODELS: ModelName[] = ['vertex-penalty', 'skeleton-shape'];
 
 const NUMERIC_OVERRIDES: (keyof Omit<MatcherConfig, 'model'>)[] = [
   'seedMaxMag', 'patchRadius', 'maxPatchRadius', 'patchRadiusStep',
   'qualityThreshold', 'coverageThreshold', 'minMatchedStars', 'rotationSteps', 'skeletonFillRatio',
   'distanceThreshold', 'vertexBonusEndpoint', 'vertexBonusJoint', 'vertexSigma',
-  'brightnessWeight', 'maxConstellationStars', 'spreadWeight',
+  'brightnessWeight', 'maxConstellationStars', 'penaltyWeight',
 ];
 
-function parseArgs(): { runId: string | null; compare: [string, string] | null; model: ModelName; overrides: Partial<Omit<MatcherConfig, 'model'>>; fixturesDir: string; renderMode: 'skeleton' | 'stars'; promptVariant: string | null; skeletonModel: string | null } {
+function parseArgs(): { runId: string | null; compare: [string, string] | null; model: ModelName; overrides: Partial<Omit<MatcherConfig, 'model'>>; fixturesDir: string; promptVariant: string | null; skeletonModel: string | null } {
   const args = process.argv.slice(2);
   let runId: string | null = null;
   let compare: [string, string] | null = null;
-  let model: ModelName = 'vertex';
+  let model: ModelName = 'vertex-penalty';
   let fixturesDir = 'fixtures';
-  let renderMode: 'skeleton' | 'stars' = 'skeleton';
   let promptVariant: string | null = null;
   let skeletonModel: string | null = null;
   const overrides: Partial<Omit<MatcherConfig, 'model'>> = {};
@@ -110,18 +109,19 @@ function parseArgs(): { runId: string | null; compare: [string, string] | null; 
       model = m;
     }
     if (args[i] === '--fixtures-dir' && args[i + 1]) fixturesDir = args[++i];
-    if (args[i] === '--render-mode' && args[i + 1]) {
-      const rm = args[++i];
-      if (rm === 'skeleton' || rm === 'stars') renderMode = rm;
-    }
     if (args[i] === '--prompt-variant' && args[i + 1]) promptVariant = args[++i];
     if (args[i] === '--skeleton-model' && args[i + 1]) skeletonModel = args[++i];
+    if (args[i] === '--skeleton-shape-refine') (overrides as Record<string, boolean>)['skeletonShapeRefine'] = true;
+    if (args[i] === '--assignment-algorithm' && args[i + 1]) {
+      const alg = args[++i];
+      if (alg === 'greedy' || alg === 'hungarian') (overrides as Record<string, string>)['assignmentAlgorithm'] = alg;
+    }
     const flag = args[i]?.replace(/^--/, '') as keyof Omit<MatcherConfig, 'model'>;
     if (NUMERIC_OVERRIDES.includes(flag) && args[i + 1]) {
       (overrides as Record<string, number>)[flag] = parseFloat(args[++i]);
     }
   }
-  return { runId, compare, model, overrides, fixturesDir, renderMode, promptVariant, skeletonModel };
+  return { runId, compare, model, overrides, fixturesDir, promptVariant, skeletonModel };
 }
 
 function nextRunId(reportsDir: string): string {
@@ -182,7 +182,7 @@ async function loadOrFetchFixture(word: string, fixturesDir: string, promptVaria
 
 // ── Runner ─────────────────────────────────────────────────────────────────
 
-async function runSuite(runId: string, reportsDir: string, fixturesDir: string, catalogue: Star[], cfg: MatcherConfig, renderMode: 'skeleton' | 'stars' = 'skeleton', promptVariant: string | null = null, skeletonModel: string | null = null): Promise<RunResults> {
+async function runSuite(runId: string, reportsDir: string, fixturesDir: string, catalogue: Star[], cfg: MatcherConfig, promptVariant: string | null = null, skeletonModel: string | null = null): Promise<RunResults> {
   const outDir = path.join(reportsDir, runId);
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -241,7 +241,7 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
         patchStars,
       };
     }
-    const constellationBuf = renderPatch(wordResult, { width: THUMB_SIZE, height: THUMB_SIZE, patchRadiusDeg: PATCH_RADIUS_DEG, renderMode });
+    const constellationBuf = renderPatch(wordResult, { width: THUMB_SIZE, height: THUMB_SIZE, patchRadiusDeg: PATCH_RADIUS_DEG });
     const skeleton = fixture.skeletons?.[0] ?? null;
     const svgString = fixture.match?.svgPath ?? null;
     const compositeBuf = renderComposite(svgString, skeleton, constellationBuf, THUMB_SIZE);
@@ -364,12 +364,12 @@ function generateCompareHtml(idA: string, idB: string, runA: RunResults, runB: R
   <div class="halves">
     <div class="half">
       <div class="run-label">${idA}</div>
-      <img src="../${idA}/${rA.word}.png" class="sky" alt="${rA.word} (${idA})">
+      <img src="./${idA}/${rA.word}.png" class="sky" alt="${rA.word} (${idA})">
       <div class="score" style="color:${scoreColor(rA.score)}">${pctA}%</div>
     </div>
     <div class="half">
       <div class="run-label">${idB}</div>
-      <img src="../${idB}/${rA.word}.png" class="sky" alt="${rA.word} (${idB})">
+      <img src="./${idB}/${rA.word}.png" class="sky" alt="${rA.word} (${idB})">
       <div class="score" style="color:${rB ? scoreColor(rB.score) : '#555'}">${pctB}%</div>
     </div>
   </div>
@@ -386,8 +386,8 @@ function generateCompareHtml(idA: string, idB: string, runA: RunResults, runB: R
   body { background: #0d0d1f; color: #ccc; font-family: system-ui, sans-serif; padding: 16px; }
   header { margin-bottom: 16px; }
   h1 { font-size: 1.1rem; color: #fff; margin-bottom: 4px; }
-  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
-  .card { background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; width: 440px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 880px); gap: 12px; }
+  .card { background: #14142a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 8px; }
   .word { font-size: 0.9rem; font-weight: bold; color: #fff; margin-bottom: 6px; text-transform: capitalize; }
   .delta { font-size: 0.75rem; font-weight: bold; }
   .halves { display: flex; gap: 6px; }
@@ -411,7 +411,7 @@ ${cards}
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { runId: argRunId, compare, model, overrides, fixturesDir: fixturesDirName, renderMode, promptVariant, skeletonModel } = parseArgs();
+  const { runId: argRunId, compare, model, overrides, fixturesDir: fixturesDirName, promptVariant, skeletonModel } = parseArgs();
   const matcherConfig: MatcherConfig = { model, ...overrides };
   const reportsDir = path.join(__dirname, 'reports');
   const fixturesDir = path.join(__dirname, fixturesDirName);
@@ -452,7 +452,7 @@ async function main() {
   console.log(`\nRun ID: ${runId}`);
   console.log(`Processing ${words.length} words...\n`);
 
-  const runResults = await runSuite(runId, reportsDir, fixturesDir, catalogue, matcherConfig, renderMode, promptVariant, skeletonModel);
+  const runResults = await runSuite(runId, reportsDir, fixturesDir, catalogue, matcherConfig, promptVariant, skeletonModel);
 
   console.log(
     `\nDone: ${runResults.greenCount} green, ${runResults.amberCount} amber, ${runResults.redCount} red`,

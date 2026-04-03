@@ -2,7 +2,7 @@ import type { Star, Skeleton, MatchResult } from './types';
 
 // ── Public config types ───────────────────────────────────────────────────
 
-export type ModelName = 'simple' | 'vertex' | 'spread';
+export type ModelName = 'vertex-penalty' | 'skeleton-shape';
 
 /** Pass as the optional fourth argument to match() to select a model and/or
  *  override individual constants. All fields except `model` are optional —
@@ -26,7 +26,9 @@ export interface MatcherConfig {
   vertexSigma?: number;
   brightnessWeight?: number;
   maxConstellationStars?: number;
-  spreadWeight?: number;
+  penaltyWeight?: number;
+  skeletonShapeRefine?: boolean;
+  assignmentAlgorithm?: 'greedy' | 'hungarian';
 }
 
 // ── Internal types ────────────────────────────────────────────────────────
@@ -47,7 +49,9 @@ interface ModelDefaults {
   vertexSigma: number;
   brightnessWeight: number;
   maxConstellationStars: number;
-  spreadWeight: number;
+  penaltyWeight: number;
+  skeletonShapeRefine: boolean;
+  assignmentAlgorithm: 'greedy' | 'hungarian';
 }
 
 interface ResolvedConfig extends ModelDefaults {
@@ -58,7 +62,7 @@ interface ScoringModel {
   defaults: ModelDefaults;
   starLoss(d: number): number;
   vertexBonus(dVtx: number, degree: number, cfg: ResolvedConfig): number;
-  spreadScore(matchedNorm: Point2D[], skelNorm: Point2D[], edges: [number, number][], cfg: ResolvedConfig): number;
+  penaltyScore(matchedNorm: Point2D[], skelNorm: Point2D[], cfg: ResolvedConfig): number;
 }
 
 // ── Haversine distance ────────────────────────────────────────────────────
@@ -137,57 +141,55 @@ const BASE_DEFAULTS: ModelDefaults = {
   maxPatchRadius: 15,     // degrees
   patchRadiusStep: 2.5,   // degrees
   qualityThreshold: 0.80,
-  coverageThreshold: 0.60,
+  coverageThreshold: 0.70,
   minMatchedStars: 6,
-  rotationSteps: 12,      // every 30°
+  rotationSteps: 24,      // every 15°
   skeletonFillRatio: 0.8, // skeleton longest axis = 80% of patch diameter
   distanceThreshold: 0.15, // 1.5° at default patch
-  vertexBonusEndpoint: 0.6,
-  vertexBonusJoint: 0.1,
+  vertexBonusEndpoint: 2.0,
+  vertexBonusJoint: 0.4,
   vertexSigma: 0.12,      // 1.2° at default patch
   brightnessWeight: 0.3,
   maxConstellationStars: 8,
-  spreadWeight: 0.2,
+  penaltyWeight: 0.3,
+  skeletonShapeRefine: false,
+  assignmentAlgorithm: 'greedy',
 };
 
-const SIMPLE_MODEL: ScoringModel = {
-  defaults: { ...BASE_DEFAULTS },
-  starLoss: (d) => d,
-  vertexBonus: () => 0,
-  spreadScore: () => 0,
-};
-
-const VERTEX_MODEL: ScoringModel = {
+const VERTEX_PENALTY_MODEL: ScoringModel = {
   defaults: { ...BASE_DEFAULTS },
   starLoss: (d) => d,
   vertexBonus: (dVtx, degree, cfg) => {
     const bonus = degree === 1 ? cfg.vertexBonusEndpoint : cfg.vertexBonusJoint;
     return bonus * Math.exp(-(dVtx * dVtx) / (cfg.vertexSigma * cfg.vertexSigma));
   },
-  spreadScore: () => 0,
-};
-
-const SPREAD_MODEL: ScoringModel = {
-  defaults: { ...BASE_DEFAULTS },
-  starLoss: (d) => d,
-  vertexBonus: (dVtx, degree, cfg) => VERTEX_MODEL.vertexBonus(dVtx, degree, cfg),
-  spreadScore: (matchedNorm, skelNorm, edges, cfg) => {
-    if (edges.length === 0) return 0;
-    const covered = edges.filter(([i, j]) =>
-      matchedNorm.some((mn) => pointToSegmentDist(mn, skelNorm[i], skelNorm[j]) < cfg.distanceThreshold),
+  penaltyScore: (matchedNorm, skelNorm, cfg) => {
+    const uncovered = skelNorm.filter(([vx, vy]) =>
+      !matchedNorm.some(([mx, my]) => {
+        const dx = mx - vx, dy = my - vy;
+        return Math.sqrt(dx * dx + dy * dy) < cfg.distanceThreshold;
+      }),
     ).length;
-    return covered / edges.length;
+    return cfg.penaltyWeight * uncovered / Math.max(1, skelNorm.length);
   },
 };
 
+// skeleton-shape model — scoring is handled as a special path in scoreAndMatch;
+// these interface methods are not called for this model.
+const SKELETON_SHAPE_MODEL: ScoringModel = {
+  defaults: { ...BASE_DEFAULTS },
+  starLoss: (d) => d,
+  vertexBonus: () => 0,
+  penaltyScore: () => 0,
+};
+
 const MODELS: Record<ModelName, ScoringModel> = {
-  simple: SIMPLE_MODEL,
-  vertex: VERTEX_MODEL,
-  spread: SPREAD_MODEL,
+  'vertex-penalty': VERTEX_PENALTY_MODEL,
+  'skeleton-shape': SKELETON_SHAPE_MODEL,
 };
 
 function resolveConfig(config?: MatcherConfig): ResolvedConfig {
-  const modelName = config?.model ?? 'vertex';
+  const modelName = config?.model ?? 'vertex-penalty';
   const model = MODELS[modelName];
   return { ...model.defaults, ...config, model: modelName };
 }
@@ -219,8 +221,8 @@ export function effectiveDist(
     }
   }
 
-  const bonus = MODELS[cfg.model].vertexBonus(dVtx, bestDegree, cfg);
-  return dSeg * (1 - bonus);
+  const bonusValue = MODELS[cfg.model].vertexBonus(dVtx, bestDegree, cfg);
+  return Math.max(0, dSeg - bonusValue);
 }
 
 export function maxPairwiseAngularDist(stars: Star[]): number {
@@ -234,16 +236,84 @@ export function maxPairwiseAngularDist(stars: Star[]): number {
   return max;
 }
 
+// ── Hungarian algorithm (min-cost bipartite matching) ─────────────────────
+
+/** Jonker-Volgenant style Hungarian algorithm on an n×m cost matrix (n ≤ m).
+ *  Returns result[i] = column index assigned to row i, minimising total cost. */
+function hungarianAssign(cost: number[][]): number[] {
+  const n = cost.length;
+  const m = cost[0].length;
+  // u[i] row potential (1-indexed), v[j] col potential (1-indexed)
+  const u = new Array<number>(n + 1).fill(0);
+  const v = new Array<number>(m + 1).fill(0);
+  const p = new Array<number>(m + 1).fill(0); // p[j] = row matched to col j (0 = none)
+  const way = new Array<number>(m + 1).fill(0);
+
+  for (let i = 1; i <= n; i++) {
+    p[0] = i;
+    let j0 = 0;
+    const minVal = new Array<number>(m + 1).fill(Infinity);
+    const used = new Array<boolean>(m + 1).fill(false);
+
+    do {
+      used[j0] = true;
+      const i0 = p[j0];
+      let delta = Infinity;
+      let j1 = 0;
+      for (let j = 1; j <= m; j++) {
+        if (!used[j]) {
+          const cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+          if (cur < minVal[j]) { minVal[j] = cur; way[j] = j0; }
+          if (minVal[j] < delta) { delta = minVal[j]; j1 = j; }
+        }
+      }
+      for (let j = 0; j <= m; j++) {
+        if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
+        else { minVal[j] -= delta; }
+      }
+      j0 = j1;
+    } while (p[j0] !== 0);
+
+    do { const j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0 !== 0);
+  }
+
+  const result = new Array<number>(n).fill(-1);
+  for (let j = 1; j <= m; j++) {
+    if (p[j] !== 0) result[p[j] - 1] = j - 1;
+  }
+  return result;
+}
+
 // ── Constellation star selection ──────────────────────────────────────────
 
 export function selectConstellationStars(
   skelNorm: Point2D[],
-  edges: [number, number][],
+  _edges: [number, number][],
   degrees: number[],
   matchedStars: Star[],
   matchedNorm: Point2D[],
   cfg: ResolvedConfig = resolveConfig(),
 ): Star[] {
+  const nVtx = Math.min(skelNorm.length, cfg.maxConstellationStars);
+  const nStars = matchedStars.length;
+  if (nStars === 0) return [];
+
+  if (cfg.assignmentAlgorithm === 'hungarian' && nVtx <= nStars) {
+    // Build n×m cost matrix (n = capped vertices, m = matched stars)
+    const cost: number[][] = [];
+    for (let i = 0; i < nVtx; i++) {
+      const [vx, vy] = skelNorm[i];
+      cost.push(matchedStars.map((s, j) => {
+        const dx = matchedNorm[j][0] - vx;
+        const dy = matchedNorm[j][1] - vy;
+        return Math.sqrt(dx * dx + dy * dy) + cfg.brightnessWeight * (s.mag / 6.0);
+      }));
+    }
+    const assignment = hungarianAssign(cost);
+    return assignment.map((j) => matchedStars[j]);
+  }
+
+  // Greedy (default): assign vertices in endpoint-first order
   const vertexOrder = skelNorm
     .map((_, i) => i)
     .sort((a, b) => (degrees[a] === 1 ? 0 : 1) - (degrees[b] === 1 ? 0 : 1));
@@ -286,6 +356,7 @@ interface ScoreResult {
   stars: Star[];
   constellationStars: Star[];
   skeletonRaDec: { ra: number; dec: number }[];
+  edgeStarChains?: Star[][];
 }
 
 function scoreAndMatch(
@@ -295,10 +366,17 @@ function scoreAndMatch(
   rotDeg: number,
   seed: Star,
   cfg: ResolvedConfig,
+  anchorVertex: number = -1,
 ): ScoreResult {
-  const centered: Point2D[] = skelPoints.map(([x, y]) => [x - 0.5, 0.5 - y]);
+  let anchored: Point2D[];
+  if (anchorVertex >= 0 && anchorVertex < skelPoints.length) {
+    const [ax, ay] = skelPoints[anchorVertex];
+    anchored = skelPoints.map(([x, y]) => [x - ax, ay - y]);
+  } else {
+    anchored = skelPoints.map(([x, y]) => [x - 0.5, 0.5 - y]);
+  }
   const scale = cfg.skeletonFillRatio * 2;
-  const skelNorm: Point2D[] = rotate(centered, rotDeg).map(([x, y]) => [x * scale, y * scale]);
+  const skelNorm: Point2D[] = rotate(anchored, rotDeg).map(([x, y]) => [x * scale, y * scale]);
 
   const starNorm: Point2D[] = candidates.map((s) => [
     (s.ra - seed.ra) / cfg.patchRadius,
@@ -306,6 +384,89 @@ function scoreAndMatch(
   ]);
 
   const degrees = vertexDegrees(edges, skelPoints.length);
+
+  // ── skeleton-shape model: edge-length scoring ──────────────────────────
+  if (cfg.model === 'skeleton-shape') {
+    // NN assignment: map each skeleton vertex to the nearest unassigned candidate
+    const assignment = new Array<number>(skelNorm.length).fill(-1);
+    const used = new Set<number>();
+    for (let k = 0; k < skelNorm.length; k++) {
+      let bestDist = Infinity;
+      let bestStar = -1;
+      for (let j = 0; j < starNorm.length; j++) {
+        if (used.has(j)) continue;
+        const dx = starNorm[j][0] - skelNorm[k][0];
+        const dy = starNorm[j][1] - skelNorm[k][1];
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) { bestDist = d; bestStar = j; }
+      }
+      if (bestStar >= 0) { assignment[k] = bestStar; used.add(bestStar); }
+    }
+
+    // Optional hill-climbing: swap vertex assignments to reduce edge-length mismatch
+    if (cfg.skeletonShapeRefine) {
+      function totalMismatch(asgn: number[]): number {
+        let total = 0;
+        for (const [i, j] of edges) {
+          if (asgn[i] < 0 || asgn[j] < 0) continue;
+          const si = starNorm[asgn[i]], sj = starNorm[asgn[j]];
+          const starLen = Math.sqrt((si[0] - sj[0]) ** 2 + (si[1] - sj[1]) ** 2);
+          const vi = skelNorm[i], vj = skelNorm[j];
+          const skelLen = Math.sqrt((vi[0] - vj[0]) ** 2 + (vi[1] - vj[1]) ** 2);
+          total += Math.abs(starLen - skelLen);
+        }
+        return total;
+      }
+      let current = totalMismatch(assignment);
+      for (let iter = 0; iter < 50; iter++) {
+        let improved = false;
+        for (let a = 0; a < assignment.length; a++) {
+          for (let b = a + 1; b < assignment.length; b++) {
+            const tmp = assignment[a];
+            assignment[a] = assignment[b];
+            assignment[b] = tmp;
+            const next = totalMismatch(assignment);
+            if (next < current) {
+              current = next;
+              improved = true;
+            } else {
+              assignment[b] = assignment[a];
+              assignment[a] = tmp;
+            }
+          }
+        }
+        if (!improved) break;
+      }
+    }
+
+    // Score = 1 / (1 + mean(|starEdgeLen - skelEdgeLen|))
+    let totalMismatchVal = 0;
+    let edgeCount = 0;
+    for (const [i, j] of edges) {
+      if (assignment[i] < 0 || assignment[j] < 0) continue;
+      const si = starNorm[assignment[i]], sj = starNorm[assignment[j]];
+      const starLen = Math.sqrt((si[0] - sj[0]) ** 2 + (si[1] - sj[1]) ** 2);
+      const vi = skelNorm[i], vj = skelNorm[j];
+      const skelLen = Math.sqrt((vi[0] - vj[0]) ** 2 + (vi[1] - vj[1]) ** 2);
+      totalMismatchVal += Math.abs(starLen - skelLen);
+      edgeCount++;
+    }
+    const shapeScore = edgeCount > 0 ? 1 / (1 + totalMismatchVal / edgeCount) : 0;
+
+    // Constellation stars are those assigned to skeleton vertices (in vertex order, no cap)
+    const constellationStars: Star[] = [];
+    for (let k = 0; k < skelNorm.length; k++) {
+      if (assignment[k] >= 0) constellationStars.push(candidates[assignment[k]]);
+    }
+
+    const matchedStars = [...used].map((idx) => candidates[idx]);
+    const skeletonRaDec = skelNorm.map(([nx, ny]) => ({
+      ra: nx * cfg.patchRadius + seed.ra,
+      dec: ny * cfg.patchRadius + seed.dec,
+    }));
+
+    return { score: shapeScore, stars: matchedStars, constellationStars, skeletonRaDec };
+  }
 
   const matched: Array<{ star: Star; norm: Point2D; d: number }> = [];
   for (let j = 0; j < candidates.length; j++) {
@@ -319,8 +480,8 @@ function scoreAndMatch(
 
   const coverageRatio = candidates.length > 0 ? matched.length / candidates.length : 0;
   const model = MODELS[cfg.model];
-  const spread = model.spreadScore(matched.map((m) => m.norm), skelNorm, edges, cfg);
-  const score = coverageRatio + cfg.spreadWeight * spread;
+  const penalty = model.penaltyScore(matched.map((m) => m.norm), skelNorm, cfg);
+  const score = coverageRatio - penalty;
 
   const constellationStars = selectConstellationStars(
     skelNorm,
@@ -364,10 +525,12 @@ function runSeedSweep(
 
     let best: ScoreResult = { score: 0, stars: [], constellationStars: [], skeletonRaDec: [] };
 
-    for (let r = 0; r < cfg.rotationSteps; r++) {
-      const rotDeg = (r * 360) / cfg.rotationSteps;
-      const result = scoreAndMatch(points, edges, candidates, rotDeg, seed, cfg);
-      if (result.score > best.score) best = result;
+    for (let k = 0; k < points.length; k++) {
+      for (let r = 0; r < cfg.rotationSteps; r++) {
+        const rotDeg = (r * 360) / cfg.rotationSteps;
+        const result = scoreAndMatch(points, edges, candidates, rotDeg, seed, cfg, k);
+        if (result.score > best.score) best = result;
+      }
     }
 
     if (!globalBest || best.score > globalBest.score) {

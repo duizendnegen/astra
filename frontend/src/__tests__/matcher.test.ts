@@ -141,8 +141,10 @@ describe('effectiveDist', () => {
   });
 
   it('endpoint vertex bonus reduces effective distance vs a joint bonus', () => {
-    // Place a star very close to vertex P0 = [-0.5, 0]
-    const starNearEndpoint: Point2D = [-0.5, 0.05];
+    // Place a star at distance ~0.2 from vertex P0 = [-0.5, 0]
+    // (close enough for the Gaussian bonus to differ between endpoint/joint,
+    //  but far enough that the larger endpoint bonus doesn't clamp both to 0)
+    const starNearEndpoint: Point2D = [-0.5, 0.2];
 
     // Skeleton with endpoint-only degrees (degree-1 for both)
     const dEndpoint = effectiveDist(starNearEndpoint, skelNorm, edges, [1, 1]);
