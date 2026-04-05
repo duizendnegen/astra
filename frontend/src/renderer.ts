@@ -112,12 +112,24 @@ function drawConstellation(): void {
   ctx.lineWidth = 1.5;
   ctx.globalAlpha = 0.75 * constellationAlpha;
 
-  if (skeletonPoints && skeletonPoints.length > 0) {
-    // Project skeleton contour points and draw edges between them
+  if (features.renderMode === 'skeleton' && skeletonPoints && skeletonPoints.length > 0) {
+    // Debug override: draw edges between ideal skeleton positions
     const skelPositions: ([number, number] | null)[] = skeletonPoints.map((p) => project(p.ra, p.dec));
     for (const [i, j] of edges) {
       const a = skelPositions[i];
       const b = skelPositions[j];
+      if (!a || !b) continue;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
+  } else {
+    // Default: draw edges between actual constellation star positions
+    for (const [i, j] of edges) {
+      if (i >= constellationStars.length || j >= constellationStars.length) continue;
+      const a = starPositions[i];
+      const b = starPositions[j];
       if (!a || !b) continue;
       ctx.beginPath();
       ctx.moveTo(a[0], a[1]);

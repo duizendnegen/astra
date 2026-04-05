@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Constellation stars assigned via Hungarian algorithm
 The system SHALL select `constellationStars` by solving a bipartite assignment problem between

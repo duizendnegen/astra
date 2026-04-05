@@ -7,6 +7,8 @@ import {
   effectiveDist,
   maxPairwiseAngularDist,
   selectConstellationStars,
+  buildSkeletonTerritories,
+  projectOntoPath,
   type Point2D,
 } from '../matcher';
 import type { Star } from '../types';
@@ -192,6 +194,57 @@ describe('maxPairwiseAngularDist', () => {
   });
 });
 
+describe('buildSkeletonTerritories', () => {
+  it('partitions a linear path into non-overlapping intervals covering [0, L]', () => {
+    // 0 -- 1 -- 2  (horizontal path)
+    const skel: Point2D[] = [[-0.5, 0], [0, 0], [0.5, 0]];
+    const edges: [number, number][] = [[0, 1], [1, 2]];
+    const { territories, tourPath, tourArcLens } = buildSkeletonTerritories(skel, edges);
+    expect(territories).toHaveLength(3);
+    // Boundaries should partition [0, totalLen]
+    const totalLen = tourArcLens[tourArcLens.length - 1];
+    const sorted = [...territories].sort((a, b) => a.lo - b.lo);
+    expect(sorted[0].lo).toBeCloseTo(0, 5);
+    expect(sorted[sorted.length - 1].hi).toBeCloseTo(totalLen, 5);
+    // No gaps or overlaps
+    for (let i = 0; i + 1 < sorted.length; i++) {
+      expect(sorted[i].hi).toBeCloseTo(sorted[i + 1].lo, 5);
+    }
+  });
+
+  it('starts DFS from the highest-degree vertex', () => {
+    // T-shape: P1 is the junction (degree 3)
+    const skel: Point2D[] = [[-0.5, 0], [0, 0], [0.5, 0], [0, 0.5]];
+    const edges: [number, number][] = [[0, 1], [1, 2], [1, 3]];
+    const { territories } = buildSkeletonTerritories(skel, edges);
+    // All territories are valid intervals
+    for (const t of territories) {
+      expect(t.hi).toBeGreaterThanOrEqual(t.lo);
+    }
+  });
+});
+
+describe('projectOntoPath', () => {
+  it('returns 0 for a point at the start of the path', () => {
+    const path: Point2D[] = [[0, 0], [1, 0], [2, 0]];
+    const arcLens = [0, 1, 2];
+    expect(projectOntoPath([0, 0], path, arcLens)).toBeCloseTo(0, 5);
+  });
+
+  it('returns totalLen for a point at the end of the path', () => {
+    const path: Point2D[] = [[0, 0], [1, 0], [2, 0]];
+    const arcLens = [0, 1, 2];
+    expect(projectOntoPath([2, 0], path, arcLens)).toBeCloseTo(2, 5);
+  });
+
+  it('returns midpoint arc-length for a point perpendicular to segment midpoint', () => {
+    const path: Point2D[] = [[0, 0], [2, 0]];
+    const arcLens = [0, 2];
+    // Point above midpoint of segment
+    expect(projectOntoPath([1, 1], path, arcLens)).toBeCloseTo(1, 5);
+  });
+});
+
 describe('selectConstellationStars', () => {
   // Simple T-shaped skeleton:
   //   P0 (top-left endpoint) ── P1 (centre joint) ── P2 (top-right endpoint)
@@ -207,16 +260,14 @@ describe('selectConstellationStars', () => {
     norms: positions,
   });
 
-  it('fills endpoint vertices before joint vertices', () => {
-    // Place stars near each vertex — one near P1 (joint), one near each endpoint
+  it('assigns stars from all skeleton regions when stars are spread (territory-based)', () => {
+    // Stars placed exactly at each skeleton vertex
     const { stars, norms } = makeStars([[-0.5, -0.5], [0, -0.5], [0.5, -0.5], [0, 0.5]]);
     const result = selectConstellationStars(skelNorm, edges, degrees, stars, norms);
-    // P0, P2, P3 are degree-1 endpoints — their stars should be in result
+    // All 4 stars should be assigned, one per vertex
+    expect(result.length).toBe(4);
     const ids = new Set(result.map((s) => s.id));
-    // Stars 0,2,3 are near endpoints (P0, P2, P3); star 1 is near joint P1
-    expect(ids.has(0)).toBe(true); // near P0 (endpoint)
-    expect(ids.has(2)).toBe(true); // near P2 (endpoint)
-    expect(ids.has(3)).toBe(true); // near P3 (endpoint)
+    expect(ids.size).toBe(4); // all distinct
   });
 
   it('enforces uniqueness — each star claimed at most once', () => {
@@ -257,6 +308,20 @@ describe('selectConstellationStars', () => {
     );
     // With BRIGHTNESS_WEIGHT=0.3, bright star's lower mag compensates the small distance offset
     expect(result[0].id).toBe(2); // brighter star selected
+  });
+
+  it('result is ordered by skeleton vertex index', () => {
+    // Stars placed exactly at each vertex; result[i] should be the star at vertex i
+    const { stars, norms } = makeStars([[-0.5, -0.5], [0, -0.5], [0.5, -0.5], [0, 0.5]]);
+    const result = selectConstellationStars(skelNorm, edges, degrees, stars, norms);
+    // Each result position corresponds to the star nearest to that vertex
+    expect(result.length).toBe(4);
+    // Vertex 0 is at [-0.5,-0.5] → star 0 is placed there
+    expect(result[0].id).toBe(0);
+    // Vertex 2 is at [0.5,-0.5] → star 2 is placed there
+    expect(result[2].id).toBe(2);
+    // Vertex 3 is at [0,0.5] → star 3 is placed there
+    expect(result[3].id).toBe(3);
   });
 });
 

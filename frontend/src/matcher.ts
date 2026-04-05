@@ -27,6 +27,7 @@ export interface MatcherConfig {
   brightnessWeight?: number;
   maxConstellationStars?: number;
   penaltyWeight?: number;
+  chamferCap?: number;
   skeletonShapeRefine?: boolean;
   assignmentAlgorithm?: 'greedy' | 'hungarian';
 }
@@ -50,6 +51,7 @@ interface ModelDefaults {
   brightnessWeight: number;
   maxConstellationStars: number;
   penaltyWeight: number;
+  chamferCap: number;
   skeletonShapeRefine: boolean;
   assignmentAlgorithm: 'greedy' | 'hungarian';
 }
@@ -140,8 +142,8 @@ const BASE_DEFAULTS: ModelDefaults = {
   patchRadius: 10,        // degrees
   maxPatchRadius: 15,     // degrees
   patchRadiusStep: 2.5,   // degrees
-  qualityThreshold: 0.80,
-  coverageThreshold: 0.70,
+  qualityThreshold: 0.70,
+  coverageThreshold: 0.99,
   minMatchedStars: 6,
   rotationSteps: 24,      // every 15°
   skeletonFillRatio: 0.8, // skeleton longest axis = 80% of patch diameter
@@ -152,8 +154,9 @@ const BASE_DEFAULTS: ModelDefaults = {
   brightnessWeight: 0.3,
   maxConstellationStars: 8,
   penaltyWeight: 0.3,
+  chamferCap: 1.0,
   skeletonShapeRefine: false,
-  assignmentAlgorithm: 'greedy',
+  assignmentAlgorithm: 'hungarian',
 };
 
 const VERTEX_PENALTY_MODEL: ScoringModel = {
@@ -284,12 +287,139 @@ function hungarianAssign(cost: number[][]): number[] {
   return result;
 }
 
+// ── Territory-based star selection helpers ────────────────────────────────
+
+/** Build DFS Euler tour from adj starting at root, returning the sequence of vertices
+ *  visited including backtracks (each edge traversed twice for a tree). */
+function eulerTour(adj: number[][], root: number): number[] {
+  const tour: number[] = [];
+  const visited = new Set<number>();
+  function dfs(v: number): void {
+    tour.push(v);
+    visited.add(v);
+    for (const u of adj[v]) {
+      if (!visited.has(u)) {
+        dfs(u);
+        tour.push(v);
+      }
+    }
+  }
+  dfs(root);
+  return tour;
+}
+
+/** For each skeleton vertex, compute [lo, hi] arc-length territory along the DFS Euler tour.
+ *  Territory boundaries are midpoints between consecutive first-visit arc-length positions. */
+export function buildSkeletonTerritories(
+  skelNorm: Point2D[],
+  edges: [number, number][],
+): { territories: { lo: number; hi: number }[]; tourPath: Point2D[]; tourArcLens: number[] } {
+  const n = skelNorm.length;
+  const fallback = skelNorm.map(() => ({ lo: 0, hi: 0 }));
+
+  if (n === 0) return { territories: fallback, tourPath: [], tourArcLens: [] };
+
+  // Build adjacency list
+  const adj: number[][] = Array.from({ length: n }, () => []);
+  for (const [i, j] of edges) {
+    adj[i].push(j);
+    adj[j].push(i);
+  }
+
+  // Find highest-degree vertex as DFS root
+  let startVertex = 0;
+  for (let i = 1; i < n; i++) {
+    if (adj[i].length > adj[startVertex].length) startVertex = i;
+  }
+
+  // Build Euler tour (DFS with backtracking)
+  const tour = eulerTour(adj, startVertex);
+
+  // Compute arc-lengths along the tour polyline
+  const tourArcLens: number[] = [0];
+  for (let i = 1; i < tour.length; i++) {
+    const [ax, ay] = skelNorm[tour[i - 1]];
+    const [bx, by] = skelNorm[tour[i]];
+    tourArcLens.push(tourArcLens[i - 1] + Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2));
+  }
+  const totalLen = tourArcLens[tourArcLens.length - 1];
+  const tourPath: Point2D[] = tour.map(v => skelNorm[v]);
+
+  // Record first-visit arc-length for each vertex and the DFS first-visit order
+  const firstVisitArcLen = new Array<number>(n).fill(-1);
+  const firstVisitOrder: number[] = [];
+  for (let i = 0; i < tour.length; i++) {
+    const v = tour[i];
+    if (firstVisitArcLen[v] < 0) {
+      firstVisitArcLen[v] = tourArcLens[i];
+      firstVisitOrder.push(v);
+    }
+  }
+
+  // Sort first-visit order by arc-length (ascending)
+  firstVisitOrder.sort((a, b) => firstVisitArcLen[a] - firstVisitArcLen[b]);
+  const sortedArcLens = firstVisitOrder.map(v => firstVisitArcLen[v]);
+
+  // Build territories: midpoints between consecutive first-visit arc-lengths
+  const territories: { lo: number; hi: number }[] = Array.from({ length: n }, () => ({ lo: 0, hi: 0 }));
+  for (let i = 0; i < firstVisitOrder.length; i++) {
+    const v = firstVisitOrder[i];
+    const t = sortedArcLens[i];
+    const lo = i === 0 ? 0 : (sortedArcLens[i - 1] + t) / 2;
+    const hi = i === firstVisitOrder.length - 1 ? totalLen : (t + sortedArcLens[i + 1]) / 2;
+    territories[v] = { lo, hi };
+  }
+
+  return { territories, tourPath, tourArcLens };
+}
+
+/** Project a star's normalised position onto the DFS traversal polyline.
+ *  Returns the arc-length parameter t of the closest point on the polyline. */
+export function projectOntoPath(
+  starNorm: Point2D,
+  tourPath: Point2D[],
+  tourArcLens: number[],
+): number {
+  let bestT = 0;
+  let bestDistSq = Infinity;
+  const [sx, sy] = starNorm;
+
+  for (let i = 0; i + 1 < tourPath.length; i++) {
+    const [ax, ay] = tourPath[i];
+    const [bx, by] = tourPath[i + 1];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+
+    let proj: [number, number];
+    let t01: number;
+    if (lenSq === 0) {
+      proj = [ax, ay];
+      t01 = 0;
+    } else {
+      t01 = Math.max(0, Math.min(1, ((sx - ax) * dx + (sy - ay) * dy) / lenSq));
+      proj = [ax + t01 * dx, ay + t01 * dy];
+    }
+
+    const ex = sx - proj[0];
+    const ey = sy - proj[1];
+    const distSq = ex * ex + ey * ey;
+
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq;
+      bestT = tourArcLens[i] + t01 * (tourArcLens[i + 1] - tourArcLens[i]);
+    }
+  }
+
+  return bestT;
+}
+
 // ── Constellation star selection ──────────────────────────────────────────
 
 export function selectConstellationStars(
   skelNorm: Point2D[],
-  _edges: [number, number][],
-  degrees: number[],
+  edges: [number, number][],
+  _degrees: number[],
   matchedStars: Star[],
   matchedNorm: Point2D[],
   cfg: ResolvedConfig = resolveConfig(),
@@ -313,23 +443,31 @@ export function selectConstellationStars(
     return assignment.map((j) => matchedStars[j]);
   }
 
-  // Greedy (default): assign vertices in endpoint-first order
-  const vertexOrder = skelNorm
-    .map((_, i) => i)
-    .sort((a, b) => (degrees[a] === 1 ? 0 : 1) - (degrees[b] === 1 ? 0 : 1));
+  // Territory-based allocation: assign stars to vertices in skeleton index order
+  // so that constellationStars[i] is the star for vertex i.
+  const { territories, tourPath, tourArcLens } = buildSkeletonTerritories(skelNorm, edges);
+
+  // Precompute DFS path projection for each matched star
+  const starProjections = matchedNorm.map(
+    snorm => projectOntoPath(snorm, tourPath, tourArcLens),
+  );
 
   const claimed = new Set<number>();
   const result: Star[] = [];
 
-  for (const vi of vertexOrder) {
-    if (result.length >= cfg.maxConstellationStars) break;
+  for (let vi = 0; vi < nVtx; vi++) {
+    if (claimed.size >= nStars) break;
 
+    const { lo, hi } = territories[vi];
     const [vx, vy] = skelNorm[vi];
+
+    // Find best star within territory by composite score
     let bestScore = Infinity;
     let bestIdx = -1;
 
-    for (let j = 0; j < matchedStars.length; j++) {
+    for (let j = 0; j < nStars; j++) {
       if (claimed.has(j)) continue;
+      if (starProjections[j] < lo || starProjections[j] > hi) continue;
       const dx = matchedNorm[j][0] - vx;
       const dy = matchedNorm[j][1] - vy;
       const dVtx = Math.sqrt(dx * dx + dy * dy);
@@ -337,6 +475,22 @@ export function selectConstellationStars(
       if (score < bestScore) {
         bestScore = score;
         bestIdx = j;
+      }
+    }
+
+    // Fallback: nearest unclaimed star globally
+    if (bestIdx === -1) {
+      bestScore = Infinity;
+      for (let j = 0; j < nStars; j++) {
+        if (claimed.has(j)) continue;
+        const dx = matchedNorm[j][0] - vx;
+        const dy = matchedNorm[j][1] - vy;
+        const dVtx = Math.sqrt(dx * dx + dy * dy);
+        const score = dVtx + cfg.brightnessWeight * (matchedStars[j].mag / 6.0);
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = j;
+        }
       }
     }
 
@@ -478,17 +632,36 @@ function scoreAndMatch(
 
   matched.sort((a, b) => a.d - b.d);
 
-  const coverageRatio = candidates.length > 0 ? matched.length / candidates.length : 0;
-  const model = MODELS[cfg.model];
-  const penalty = model.penaltyScore(matched.map((m) => m.norm), skelNorm, cfg);
-  const score = coverageRatio - penalty;
+  let score: number;
+  if (matched.length === 0) {
+    score = 0;
+  } else {
+    // Forward: mean min-distance from each skeleton vertex to nearest matched star, capped at chamferCap
+    let sumForward = 0;
+    for (const [vx, vy] of skelNorm) {
+      let minDist = cfg.chamferCap;
+      for (const m of matched) {
+        const dx = m.norm[0] - vx;
+        const dy = m.norm[1] - vy;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < minDist) minDist = d;
+      }
+      sumForward += minDist;
+    }
+    const meanForward = sumForward / Math.max(1, skelNorm.length);
+
+    // Reverse: mean effective distance of matched stars (already computed during matching)
+    const meanReverse = matched.reduce((sum, m) => sum + m.d, 0) / matched.length;
+
+    score = 1 / (1 + meanForward + meanReverse);
+  }
 
   const constellationStars = selectConstellationStars(
     skelNorm,
     edges,
     degrees,
-    matched.map((m) => m.star),
-    matched.map((m) => m.norm),
+    candidates,
+    starNorm,
     cfg,
   );
 
@@ -500,52 +673,271 @@ function scoreAndMatch(
   return { score, stars: matched.map((m) => m.star), constellationStars, skeletonRaDec };
 }
 
-// ── Seed sweep (single skeleton) ──────────────────────────────────────────
+// ── Spatial grid for fast nearest-star queries ───────────────────────────
 
-function runSeedSweep(
-  skeleton: Skeleton,
-  catalogue: Star[],
-  excludeSeeds: Set<number>,
-  patchRadius: number,
-  cfg: ResolvedConfig,
-): (ScoreResult & { seed: Star }) | null {
-  const { points, edges } = skeleton;
+class SpatialGrid {
+  private readonly cells: Map<number, Star[]> = new Map();
+  private readonly cellDeg: number;
+  private readonly nCols: number;
+  private readonly nRows: number;
 
-  const seeds = catalogue
-    .filter((s) => s.mag <= cfg.seedMaxMag && !excludeSeeds.has(s.id))
-    .sort((a, b) => a.mag - b.mag);
-
-  let globalBest: (ScoreResult & { seed: Star }) | null = null;
-
-  for (const seed of seeds) {
-    const candidates = catalogue.filter(
-      (s) => distanceDeg(s.ra, s.dec, seed.ra, seed.dec) <= patchRadius,
-    );
-    if (candidates.length < cfg.minMatchedStars) continue;
-
-    let best: ScoreResult = { score: 0, stars: [], constellationStars: [], skeletonRaDec: [] };
-
-    for (let k = 0; k < points.length; k++) {
-      for (let r = 0; r < cfg.rotationSteps; r++) {
-        const rotDeg = (r * 360) / cfg.rotationSteps;
-        const result = scoreAndMatch(points, edges, candidates, rotDeg, seed, cfg, k);
-        if (result.score > best.score) best = result;
-      }
-    }
-
-    if (!globalBest || best.score > globalBest.score) {
-      globalBest = { ...best, seed };
-    }
-
-    if (best.score >= cfg.coverageThreshold && best.stars.length >= cfg.minMatchedStars) {
-      console.log(
-        `[matcher] hit ${(best.score * 100).toFixed(0)}% (${best.stars.length} stars) on seed ${seed.id} mag ${seed.mag.toFixed(2)}`,
-      );
-      break;
+  constructor(stars: Star[], cellDeg = 2) {
+    this.cellDeg = cellDeg;
+    this.nCols = Math.ceil(360 / cellDeg);
+    this.nRows = Math.ceil(180 / cellDeg);
+    for (const s of stars) {
+      const k = this.key(s.ra, s.dec);
+      let cell = this.cells.get(k);
+      if (!cell) { cell = []; this.cells.set(k, cell); }
+      cell.push(s);
     }
   }
 
-  return globalBest;
+  private key(ra: number, dec: number): number {
+    const col = Math.floor(((ra % 360) + 360) % 360 / this.cellDeg) % this.nCols;
+    const row = Math.max(0, Math.min(this.nRows - 1, Math.floor((dec + 90) / this.cellDeg)));
+    return row * this.nCols + col;
+  }
+
+  inRadius(ra: number, dec: number, radius: number): Star[] {
+    const span = Math.ceil(radius / this.cellDeg) + 1;
+    const col0 = Math.floor(((ra % 360) + 360) % 360 / this.cellDeg);
+    const row0 = Math.floor((dec + 90) / this.cellDeg);
+    const result: Star[] = [];
+    for (let dr = -span; dr <= span; dr++) {
+      const row = row0 + dr;
+      if (row < 0 || row >= this.nRows) continue;
+      for (let dc = -span; dc <= span; dc++) {
+        const col = ((col0 + dc) % this.nCols + this.nCols) % this.nCols;
+        const cell = this.cells.get(row * this.nCols + col);
+        if (!cell) continue;
+        for (const s of cell) {
+          if (distanceDeg(ra, dec, s.ra, s.dec) <= radius) result.push(s);
+        }
+      }
+    }
+    return result;
+  }
+
+  nearest(ra: number, dec: number, maxRadius: number, used: Set<number>): Star | null {
+    let best: Star | null = null;
+    let bestDist = Infinity;
+    for (const s of this.inRadius(ra, dec, maxRadius)) {
+      if (used.has(s.id)) continue;
+      const d = distanceDeg(ra, dec, s.ra, s.dec);
+      if (d < bestDist) { bestDist = d; best = s; }
+    }
+    return best;
+  }
+
+  /** O(1) check: does any star exist within ~cellDeg of (ra, dec)? */
+  hasStarNear(ra: number, dec: number): boolean {
+    return (this.cells.get(this.key(ra, dec))?.length ?? 0) > 0;
+  }
+}
+
+// ── Pairwise anchor search ────────────────────────────────────────────────
+
+interface AnchorCandidate {
+  score: number;
+  anchorStar: Star;
+  physVerts: [number, number][];
+}
+
+function pairwiseAnchorSearch(
+  skeleton: Skeleton,
+  catalogue: Star[],
+  excludeSeeds: Set<number>,
+  cfg: ResolvedConfig,
+  grid: SpatialGrid,
+): (ScoreResult & { seed: Star }) | null {
+  const { points, edges } = skeleton;
+  const nVtx = points.length;
+  const capped = Math.min(nVtx, cfg.maxConstellationStars);
+
+  // Normalise skeleton to ~[-0.5, 0.5]; flip y for sky convention (north = up)
+  const normPts: Point2D[] = normalise(points).map(([x, y]) => [x, -y]);
+
+  // Find the principal axis: the pair of vertices with maximum pairwise distance.
+  // Using all-pairs (not just leaves) makes this robust to any skeleton topology.
+  let axisU = 0, axisV = 1, maxAxisDist = -1;
+  for (let a = 0; a < normPts.length; a++) {
+    for (let b = a + 1; b < normPts.length; b++) {
+      const dx = normPts[b][0] - normPts[a][0], dy = normPts[b][1] - normPts[a][1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxAxisDist) { maxAxisDist = d; axisU = a; axisV = b; }
+    }
+  }
+  if (maxAxisDist < 0.01) return null; // degenerate skeleton
+
+  // Physical span range for the anchor pair
+  const MIN_SPAN = 2;   // degrees
+  const MAX_SPAN = 25;  // degrees
+
+  // Phase 1 prescreen: cell-coverage score (O(1) per vertex — no distance computation)
+  // Phase 2 greedy: keep top GREEDY_K from phase 1, run greedy NN, compute edge-length score
+  // Phase 3 Hungarian: refine top HUNGARIAN_K with full optimal assignment
+  const PRESCREEN_K = 500;
+  const GREEDY_K = 50;
+  const HUNGARIAN_K = 20;
+
+  const prescreenTop: { score: number; anchorStar: Star; physVerts: [number, number][] }[] = [];
+  let prescreenMin = -1;
+
+  const anchors = catalogue.filter(s => s.mag <= cfg.seedMaxMag && !excludeSeeds.has(s.id));
+  // Secondary anchor mag limit — controls search breadth vs. speed.
+  // mag ≤ 5 covers all naked-eye stars (~5000 total); refine later if needed.
+  const SECONDARY_MAG = 5.0;
+  const t0 = performance.now();
+  console.log(`[matcher] pairwise: nVtx=${nVtx}, capped=${capped}, anchors=${anchors.length}, axisU=${axisU}, axisV=${axisV}, maxAxisDist=${maxAxisDist.toFixed(3)}`);
+
+  // Single reusable buffer — allocated once, mutated per iteration (zero alloc in hot path)
+  const buf: [number, number][] = normPts.map(() => [0, 0] as [number, number]);
+
+  for (const starA of anchors) {
+    const neighbors = grid.inRadius(starA.ra, starA.dec, MAX_SPAN)
+      .filter(s => s.mag <= SECONDARY_MAG);
+
+    for (const starB of neighbors) {
+      if (starB.id === starA.id) continue;
+      const physDist = distanceDeg(starA.ra, starA.dec, starB.ra, starB.dec);
+      if (physDist < MIN_SPAN) continue;
+
+      const scale = physDist / maxAxisDist;
+
+      for (let ori = 0; ori < 2; ori++) {
+        const aS = ori === 0 ? starA : starB;
+        const bS = ori === 0 ? starB : starA;
+        const uI = axisU, vI = axisV;
+
+        const [ux, uy] = normPts[uI];
+        const [vx, vy] = normPts[vI];
+        const skelDX = vx - ux, skelDY = vy - uy;
+        const skelLen = Math.sqrt(skelDX * skelDX + skelDY * skelDY);
+        const skyDX = bS.ra - aS.ra, skyDY = bS.dec - aS.dec;
+        const skyLen = Math.sqrt(skyDX * skyDX + skyDY * skyDY);
+        if (skyLen === 0 || skelLen === 0) continue;
+
+        const cosR = (skelDX * skyDX + skelDY * skyDY) / (skelLen * skyLen);
+        const sinR = (skelDX * skyDY - skelDY * skyDX) / (skelLen * skyLen);
+
+        // Fill the reusable buffer — zero allocation in the hot path
+        for (let k = 0; k < normPts.length; k++) {
+          const [nx, ny] = normPts[k];
+          const rx = nx - ux, ry = ny - uy;
+          buf[k][0] = aS.ra + (rx * cosR - ry * sinR) * scale;
+          buf[k][1] = aS.dec + (rx * sinR + ry * cosR) * scale;
+        }
+
+        // Phase 1: count vertices with a star in their spatial cell (O(capped) cell lookups)
+        let covered = 0;
+        for (let k = 0; k < capped; k++) {
+          if (grid.hasStarNear(buf[k][0], buf[k][1])) covered++;
+        }
+        const score = covered / capped;
+
+        if (score > prescreenMin) {
+          // Only copy the buffer when it makes the cut
+          const physVerts = buf.map(v => [v[0], v[1]] as [number, number]);
+          prescreenTop.push({ score, anchorStar: aS, physVerts });
+          // Batch-trim: only sort+trim when buffer doubles, amortising cost to O(N log K)
+          if (prescreenTop.length >= PRESCREEN_K * 2) {
+            prescreenTop.sort((a, b) => b.score - a.score);
+            prescreenTop.length = PRESCREEN_K;
+            prescreenMin = prescreenTop[prescreenTop.length - 1].score;
+          } else if (prescreenTop.length === 1) {
+            prescreenMin = 0; // allow everything until we have K items
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`[matcher] prescreen done: ${prescreenTop.length} candidates in ${(performance.now()-t0).toFixed(0)}ms, prescreenMin=${prescreenMin.toFixed(2)}`);
+  if (prescreenTop.length === 0) { console.log('[matcher] prescreenTop empty → null'); return null; }
+  prescreenTop.sort((a, b) => b.score - a.score);
+  console.log(`[matcher] prescreen top score=${prescreenTop[0].score.toFixed(2)}, anchor=${prescreenTop[0].anchorStar.id}`);
+
+  // Phase 2: greedy NN assignment → edge-length ratio score
+  const greedyTop: { score: number; anchorStar: Star; physVerts: [number, number][] }[] = [];
+  const GREEDY_SEARCH_R = 3; // degrees — fixed, reasonable for any scale
+
+  for (const cand of prescreenTop.slice(0, Math.min(GREEDY_K * 10, prescreenTop.length))) {
+    const { physVerts, anchorStar } = cand;
+    const used = new Set<number>();
+    const greedyStars: (Star | null)[] = [];
+    for (let k = 0; k < capped; k++) {
+      const star = grid.nearest(physVerts[k][0], physVerts[k][1], GREEDY_SEARCH_R, used);
+      greedyStars.push(star);
+      if (star) used.add(star.id);
+    }
+
+    let total = 0, cnt = 0;
+    for (const [i, j] of edges) {
+      if (i >= capped || j >= capped) continue;
+      const si = greedyStars[i], sj = greedyStars[j];
+      if (!si || !sj) { total += 1; cnt++; continue; }
+      const starLen = distanceDeg(si.ra, si.dec, sj.ra, sj.dec);
+      const skelEdgeLen = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
+      if (skelEdgeLen > 0) total += Math.abs(starLen / skelEdgeLen - 1);
+      cnt++;
+    }
+    const score = cnt > 0 ? 1 / (1 + total / cnt) : 0;
+    greedyTop.push({ score, anchorStar, physVerts });
+  }
+  greedyTop.sort((a, b) => b.score - a.score);
+  console.log(`[matcher] greedy done: ${greedyTop.length} candidates, top score=${greedyTop[0]?.score.toFixed(3) ?? 'n/a'}`);
+
+  // Phase 3: Hungarian refinement on top candidates
+  let bestResult: (ScoreResult & { seed: Star }) | null = null;
+
+  for (const cand of greedyTop.slice(0, HUNGARIAN_K)) {
+    const { physVerts, anchorStar } = cand;
+
+    // Gather the K-nearest stars per vertex, union them — keeps Hungarian matrix small
+    const K_PER_VERTEX = 20;
+    const nearbyMap = new Map<number, Star>();
+    for (let k = 0; k < capped; k++) {
+      const [ra, dec] = physVerts[k];
+      let stars = grid.inRadius(ra, dec, 3);
+      if (stars.length < K_PER_VERTEX) stars = grid.inRadius(ra, dec, 6);
+      stars.sort((a, b) =>
+        distanceDeg(ra, dec, a.ra, a.dec) - distanceDeg(ra, dec, b.ra, b.dec),
+      );
+      for (const s of stars.slice(0, K_PER_VERTEX)) nearbyMap.set(s.id, s);
+    }
+    const nearby = [...nearbyMap.values()];
+    if (nearby.length < cfg.minMatchedStars) continue;
+
+    const cost: number[][] = physVerts.slice(0, capped).map(([ra, dec]) =>
+      nearby.map(s => distanceDeg(ra, dec, s.ra, s.dec) + cfg.brightnessWeight * (s.mag / 6)),
+    );
+    const assignment = hungarianAssign(cost);
+    const constellationStars = assignment.map(j => nearby[j]);
+
+    let total = 0, cnt = 0;
+    for (const [i, j] of edges) {
+      if (i >= capped || j >= capped) continue;
+      const si = constellationStars[i], sj = constellationStars[j];
+      const starLen = distanceDeg(si.ra, si.dec, sj.ra, sj.dec);
+      const skelLen = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
+      if (skelLen > 0) total += Math.abs(starLen / skelLen - 1);
+      cnt++;
+    }
+    const score = cnt > 0 ? 1 / (1 + total / cnt) : 0;
+
+    if (!bestResult || score > bestResult.score) {
+      bestResult = {
+        score,
+        stars: nearby,
+        constellationStars,
+        skeletonRaDec: physVerts.map(([ra, dec]) => ({ ra, dec })),
+        seed: anchorStar,
+      };
+    }
+  }
+
+  return bestResult;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -559,37 +951,35 @@ export function match(
   config?: MatcherConfig,
 ): MatchResult | null {
   const cfg = resolveConfig(config);
+  const grid = new SpatialGrid(catalogue);
 
   let globalBest: (ScoreResult & { seed: Star; variantIndex: number }) | null = null;
-  let currentRadius = cfg.patchRadius;
 
-  while (true) {
-    for (let i = 0; i < skeletons.length; i++) {
-      const result = runSeedSweep(skeletons[i], catalogue, excludeSeeds, currentRadius, cfg);
-      if (!result) continue;
+  const tMatch = performance.now();
+  console.log(`[matcher] starting pairwise search, catalogue size=${catalogue.length}, skeletons=${skeletons.length}`);
+
+  for (let i = 0; i < skeletons.length; i++) {
+    try {
+      const result = pairwiseAnchorSearch(skeletons[i], catalogue, excludeSeeds, cfg, grid);
+      if (!result) { console.log(`[matcher] skeleton ${i} returned null`); continue; }
       if (!globalBest || result.score > globalBest.score) {
         globalBest = { ...result, variantIndex: i };
       }
+    } catch (e) {
+      console.error(`[matcher] error in skeleton ${i}:`, e);
     }
-
-    if (globalBest && globalBest.score >= cfg.qualityThreshold) break;
-    if (currentRadius >= cfg.maxPatchRadius) break;
-    const next = Math.min(currentRadius + cfg.patchRadiusStep, cfg.maxPatchRadius);
-    console.log(
-      `[matcher] score ${globalBest ? (globalBest.score * 100).toFixed(0) + '%' : 'none'} below ${(cfg.qualityThreshold * 100).toFixed(0)}%, expanding radius ${currentRadius}° → ${next}°`,
-    );
-    currentRadius = next;
   }
+  console.log(`[matcher] search done in ${(performance.now()-tMatch).toFixed(0)}ms`);
 
-  if (!globalBest || globalBest.stars.length === 0) return null;
+  if (!globalBest || globalBest.constellationStars.length === 0) return null;
 
   excludeSeeds.add(globalBest.seed.id);
 
   console.log(
-    `[matcher] variant ${globalBest.variantIndex} won with ${(globalBest.score * 100).toFixed(0)}% (model: ${cfg.model})`,
+    `[matcher] variant ${globalBest.variantIndex} won with ${(globalBest.score * 100).toFixed(1)}% shape score`,
   );
 
-  const span = maxPairwiseAngularDist(globalBest.stars);
+  const span = maxPairwiseAngularDist(globalBest.constellationStars);
   console.log(
     `[matcher] pattern size: ${span.toFixed(1)}° (${Math.round((span / ORION_SPAN_DEG) * 100)}% of Orion)`,
   );
