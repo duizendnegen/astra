@@ -6,9 +6,9 @@ function params(query: string): URLSearchParams {
 }
 
 describe('getFeatures', () => {
-  it('both flags off when params are empty', () => {
+  it('showLines on by default, showStars off when params are empty', () => {
     const f = getFeatures(params(''));
-    expect(f.showLines).toBe(false);
+    expect(f.showLines).toBe(true);
     expect(f.showStars).toBe(false);
   });
 
@@ -18,9 +18,9 @@ describe('getFeatures', () => {
     expect(f.showStars).toBe(false);
   });
 
-  it('showLines off, showStars on', () => {
+  it('showLines on by default, showStars on', () => {
     const f = getFeatures(params('show_stars=1'));
-    expect(f.showLines).toBe(false);
+    expect(f.showLines).toBe(true);
     expect(f.showStars).toBe(true);
   });
 

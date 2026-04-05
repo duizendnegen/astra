@@ -16,6 +16,12 @@ export interface MatchResult {
   edges: [number, number][];
   patchRA: number;              // degrees
   patchDec: number;             // degrees
+  shapeScore: number;           // edge-ratio score (always computed)
+  vertexFitScore: number;       // vertex-fit score (always computed)
+  procrustesScore?: number;     // Procrustes residual score (only when scorer === 'procrustes')
+  phase1Candidates?: number;
+  phase2Candidates?: number;
+  phase3Candidates?: number;
   skeletonPoints?: { ra: number; dec: number }[];
   variantIndex?: number;
 }

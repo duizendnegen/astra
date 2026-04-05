@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { match, maxPairwiseAngularDist } from '../lambda/src/matcher.ts';
-import type { MatcherConfig, ModelName } from '../lambda/src/matcher.ts';
+import type { MatcherConfig, ModelName, GeneratorName, ScorerName } from '../lambda/src/matcher.ts';
 import type { Star, Skeleton, MatchResult } from '../lambda/src/types.ts';
 import { words, wordCategoryMap } from './words.ts';
 import { renderPatch, renderComposite } from './render-patch.ts';
@@ -36,6 +36,8 @@ interface WordResult {
   matchSource: 'phosphor' | 'phylopic' | 'llm' | null;
   matched: boolean;
   score: number;
+  shapeScore: number;
+  vertexFitScore: number;
   starCount: number;
   angularSize: number;
   orionPct: number;
@@ -47,6 +49,37 @@ interface WordResult {
   skeletonPoints: { ra: number; dec: number }[];
   edges: [number, number][];
   patchStars: Star[];
+}
+
+interface VertexAssignment {
+  vertexIndex: number;
+  physVertRA: number;
+  physVertDec: number;
+  starId: number;
+  starRA: number;
+  starDec: number;
+  distanceDeg: number;
+  distanceNormBySpan: number | null;
+}
+
+interface WordDiagnostic {
+  word: string;
+  generator: string;
+  scorer: string;
+  phase1Candidates: number;
+  phase2Candidates: number;
+  phase3Candidates: number;
+  shapeScore: number;
+  vertexFitScore: number;
+  procrustesScore?: number;
+  physVerts: { ra: number; dec: number }[];
+  vertexAssignments: VertexAssignment[];
+}
+
+function writeDiagnostics(outDir: string, diagnostics: WordDiagnostic[]): void {
+  const outPath = path.join(outDir, 'diagnostics.json');
+  fs.writeFileSync(outPath, JSON.stringify(diagnostics, null, 2));
+  console.log(`Diagnostics written to ${outPath}`);
 }
 
 interface RunMeta {
@@ -79,14 +112,17 @@ function distanceDeg(ra1: number, dec1: number, ra2: number, dec2: number): numb
 
 const VALID_MODELS: ModelName[] = ['vertex-penalty', 'skeleton-shape'];
 
-const NUMERIC_OVERRIDES: (keyof Omit<MatcherConfig, 'model'>)[] = [
+const NUMERIC_OVERRIDES: (keyof Omit<MatcherConfig, 'model' | 'generator' | 'scorer'>)[] = [
   'seedMaxMag', 'patchRadius', 'maxPatchRadius', 'patchRadiusStep',
-  'qualityThreshold', 'coverageThreshold', 'minMatchedStars', 'rotationSteps', 'skeletonFillRatio',
+  'qualityThreshold', 'coverageThreshold', 'rotationSteps', 'skeletonFillRatio',
   'distanceThreshold', 'vertexBonusEndpoint', 'vertexBonusJoint', 'vertexSigma',
-  'brightnessWeight', 'maxConstellationStars', 'penaltyWeight',
+  'brightnessWeight', 'penaltyWeight', 'phase2Cap', 'phase3Cap',
 ];
 
-function parseArgs(): { runId: string | null; compare: [string, string] | null; model: ModelName; overrides: Partial<Omit<MatcherConfig, 'model'>>; fixturesDir: string; promptVariant: string | null; skeletonModel: string | null } {
+const VALID_GENERATORS: GeneratorName[] = ['anchor-pair', 'single-sweep', 'any-vertex'];
+const VALID_SCORERS: ScorerName[] = ['edge-ratio', 'vertex-fit', 'procrustes', 'procrustes-unit-scale'];
+
+function parseArgs(): { runId: string | null; compare: [string, string] | null; model: ModelName; overrides: Partial<Omit<MatcherConfig, 'model'>>; fixturesDir: string; promptVariant: string | null; skeletonModel: string | null; wordFilter: string[] | null } {
   const args = process.argv.slice(2);
   let runId: string | null = null;
   let compare: [string, string] | null = null;
@@ -94,6 +130,7 @@ function parseArgs(): { runId: string | null; compare: [string, string] | null; 
   let fixturesDir = 'fixtures';
   let promptVariant: string | null = null;
   let skeletonModel: string | null = null;
+  let wordFilter: string[] | null = null;
   const overrides: Partial<Omit<MatcherConfig, 'model'>> = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--run-id' && args[i + 1]) runId = args[++i];
@@ -108,6 +145,25 @@ function parseArgs(): { runId: string | null; compare: [string, string] | null; 
       }
       model = m;
     }
+    if (args[i] === '--generator' && args[i + 1]) {
+      const g = args[++i] as GeneratorName;
+      if (!VALID_GENERATORS.includes(g)) {
+        console.error(`Invalid generator "${g}". Must be one of: ${VALID_GENERATORS.join(', ')}`);
+        process.exit(1);
+      }
+      overrides.generator = g;
+    }
+    if (args[i] === '--scorer' && args[i + 1]) {
+      const s = args[++i] as ScorerName;
+      if (!VALID_SCORERS.includes(s)) {
+        console.error(`Invalid scorer "${s}". Must be one of: ${VALID_SCORERS.join(', ')}`);
+        process.exit(1);
+      }
+      overrides.scorer = s;
+    }
+    if (args[i] === '--words' && args[i + 1]) {
+      wordFilter = args[++i].split(',').map(w => w.trim()).filter(Boolean);
+    }
     if (args[i] === '--fixtures-dir' && args[i + 1]) fixturesDir = args[++i];
     if (args[i] === '--prompt-variant' && args[i + 1]) promptVariant = args[++i];
     if (args[i] === '--skeleton-model' && args[i + 1]) skeletonModel = args[++i];
@@ -116,12 +172,12 @@ function parseArgs(): { runId: string | null; compare: [string, string] | null; 
       const alg = args[++i];
       if (alg === 'greedy' || alg === 'hungarian') (overrides as Record<string, string>)['assignmentAlgorithm'] = alg;
     }
-    const flag = args[i]?.replace(/^--/, '') as keyof Omit<MatcherConfig, 'model'>;
+    const flag = args[i]?.replace(/^--/, '') as keyof Omit<MatcherConfig, 'model' | 'generator' | 'scorer'>;
     if (NUMERIC_OVERRIDES.includes(flag) && args[i + 1]) {
       (overrides as Record<string, number>)[flag] = parseFloat(args[++i]);
     }
   }
-  return { runId, compare, model, overrides, fixturesDir, promptVariant, skeletonModel };
+  return { runId, compare, model, overrides, fixturesDir, promptVariant, skeletonModel, wordFilter };
 }
 
 function nextRunId(reportsDir: string): string {
@@ -182,16 +238,28 @@ async function loadOrFetchFixture(word: string, fixturesDir: string, promptVaria
 
 // ── Runner ─────────────────────────────────────────────────────────────────
 
-async function runSuite(runId: string, reportsDir: string, fixturesDir: string, catalogue: Star[], cfg: MatcherConfig, promptVariant: string | null = null, skeletonModel: string | null = null): Promise<RunResults> {
+async function runSuite(runId: string, reportsDir: string, fixturesDir: string, catalogue: Star[], cfg: MatcherConfig, promptVariant: string | null = null, skeletonModel: string | null = null, wordFilter: string[] | null = null): Promise<RunResults> {
   const outDir = path.join(reportsDir, runId);
   fs.mkdirSync(outDir, { recursive: true });
 
+  // Apply word filter if provided
+  let activeWords = words;
+  if (wordFilter !== null) {
+    const unknown = wordFilter.filter(w => !words.includes(w));
+    if (unknown.length > 0) {
+      console.error(`Unknown words: ${unknown.join(', ')}`);
+      process.exit(1);
+    }
+    activeWords = wordFilter;
+  }
+
   // Process words in parallel with a concurrency cap to avoid overwhelming the LLM API
   const CONCURRENCY = 2;
-  const queue = [...words];
+  const queue = [...activeWords];
   const results: WordResult[] = [];
+  const diagnostics: WordDiagnostic[] = [];
 
-  async function processWord(word: string): Promise<WordResult> {
+  async function processWord(word: string): Promise<{ wordResult: WordResult; diagnostic: WordDiagnostic | null }> {
     const fixture = await loadOrFetchFixture(word, fixturesDir, promptVariant, skeletonModel);
     const matchResult: MatchResult | null = match(catalogue, fixture.skeletons, undefined, cfg);
 
@@ -202,10 +270,13 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
     const matchSource = fixture.match?.source ?? null;
 
     let wordResult: WordResult;
+    let diagnostic: WordDiagnostic | null = null;
+    let effectiveRadius = PATCH_RADIUS_DEG;
     if (!matchResult) {
       wordResult = {
         word, category, pipelineLayer, matchSource,
-        matched: false, score: 0, starCount: 0, angularSize: 0, orionPct: 0,
+        matched: false, score: 0, shapeScore: 0, vertexFitScore: 0,
+        starCount: 0, angularSize: 0, orionPct: 0,
         variantIndex: 0, patchRA: 0, patchDec: 0,
         matchedStarIds: [], constellationStarIds: [],
         skeletonPoints: [], edges: [], patchStars: [],
@@ -213,13 +284,14 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
       console.log(`  ${word}: no match`);
     } else {
       const angularSize = maxPairwiseAngularDist(matchResult.stars);
+      effectiveRadius = Math.max(PATCH_RADIUS_DEG, angularSize * 0.7);
       const orionPct = Math.round((angularSize / ORION_SPAN_DEG) * 100);
       const patchStars = catalogue.filter(
-        (s) => distanceDeg(s.ra, s.dec, matchResult.patchRA, matchResult.patchDec) <= PATCH_RADIUS_DEG,
+        (s) => distanceDeg(s.ra, s.dec, matchResult.patchRA, matchResult.patchDec) <= effectiveRadius,
       );
       const score = matchResult.stars.length / Math.max(1, patchStars.length);
       const displayScore = Math.round(score * 100);
-      console.log(`  ${word}: ${displayScore}% (${matchResult.stars.length} stars, ${angularSize.toFixed(1)}°) [L${pipelineLayer ?? '?'} ${matchSource ?? ''}]`);
+      console.log(`  ${word}: ${displayScore}% (${matchResult.stars.length} stars, ${angularSize.toFixed(1)}°) shape=${Math.round(matchResult.shapeScore * 100)}% vtx=${Math.round(matchResult.vertexFitScore * 100)}%`);
 
       wordResult = {
         word,
@@ -228,6 +300,8 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
         matchSource,
         matched: true,
         score,
+        shapeScore: matchResult.shapeScore,
+        vertexFitScore: matchResult.vertexFitScore,
         starCount: matchResult.stars.length,
         angularSize,
         orionPct,
@@ -240,19 +314,51 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
         edges: matchResult.edges,
         patchStars,
       };
+
+      const physVerts = matchResult.skeletonPoints ?? [];
+      const vertexAssignments: VertexAssignment[] = matchResult.constellationStars.map((star, i) => {
+        const pv = physVerts[i];
+        const dist = pv ? distanceDeg(star.ra, star.dec, pv.ra, pv.dec) : 0;
+        return {
+          vertexIndex: i,
+          physVertRA: pv?.ra ?? 0,
+          physVertDec: pv?.dec ?? 0,
+          starId: star.id,
+          starRA: star.ra,
+          starDec: star.dec,
+          distanceDeg: dist,
+          distanceNormBySpan: angularSize > 0 ? dist / angularSize : null,
+        };
+      });
+
+      diagnostic = {
+        word,
+        generator: cfg.generator ?? 'anchor-pair',
+        scorer: cfg.scorer ?? 'edge-ratio',
+        phase1Candidates: matchResult.phase1Candidates ?? 0,
+        phase2Candidates: matchResult.phase2Candidates ?? 0,
+        phase3Candidates: matchResult.phase3Candidates ?? 0,
+        shapeScore: matchResult.shapeScore,
+        vertexFitScore: matchResult.vertexFitScore,
+        procrustesScore: matchResult.procrustesScore,
+        physVerts,
+        vertexAssignments,
+      };
     }
-    const constellationBuf = renderPatch(wordResult, { width: THUMB_SIZE, height: THUMB_SIZE, patchRadiusDeg: PATCH_RADIUS_DEG });
+    const constellationBuf = renderPatch(wordResult, { width: THUMB_SIZE, height: THUMB_SIZE, patchRadiusDeg: effectiveRadius });
     const skeleton = fixture.skeletons?.[0] ?? null;
     const svgString = fixture.match?.svgPath ?? null;
     const compositeBuf = renderComposite(svgString, skeleton, constellationBuf, THUMB_SIZE);
     fs.writeFileSync(path.join(outDir, `${word}.png`), compositeBuf);
-    return wordResult;
+    return { wordResult, diagnostic };
   }
 
   async function worker() {
     let word: string | undefined;
     while ((word = queue.shift()) !== undefined) {
-      results.push(await processWord(word));
+      const { wordResult, diagnostic } = await processWord(word);
+      results.push(wordResult);
+      if (diagnostic) diagnostics.push(diagnostic);
     }
   }
 
@@ -264,7 +370,7 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
 
   const runResults: RunResults = {
     runId, model: cfg.model, date: new Date().toISOString(),
-    wordCount: words.length, greenCount, amberCount, redCount,
+    wordCount: activeWords.length, greenCount, amberCount, redCount,
     fixturesDir: path.basename(fixturesDir),
     results,
   };
@@ -276,6 +382,12 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
   const reportPath = path.join(outDir, 'report.html');
   fs.writeFileSync(reportPath, generateReportHtml(runResults));
   console.log(`Report written to ${reportPath}`);
+
+  try {
+    writeDiagnostics(outDir, diagnostics);
+  } catch (err) {
+    console.warn(`Warning: failed to write diagnostics: ${err}`);
+  }
 
   return runResults;
 }
@@ -411,7 +523,7 @@ ${cards}
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { runId: argRunId, compare, model, overrides, fixturesDir: fixturesDirName, promptVariant, skeletonModel } = parseArgs();
+  const { runId: argRunId, compare, model, overrides, fixturesDir: fixturesDirName, promptVariant, skeletonModel, wordFilter } = parseArgs();
   const matcherConfig: MatcherConfig = { model, ...overrides };
   const reportsDir = path.join(__dirname, 'reports');
   const fixturesDir = path.join(__dirname, fixturesDirName);
@@ -450,9 +562,10 @@ async function main() {
   // Run mode
   const runId = argRunId ?? nextRunId(reportsDir);
   console.log(`\nRun ID: ${runId}`);
-  console.log(`Processing ${words.length} words...\n`);
+  const activeWordCount = wordFilter !== null ? wordFilter.length : words.length;
+  console.log(`Processing ${activeWordCount} words...\n`);
 
-  const runResults = await runSuite(runId, reportsDir, fixturesDir, catalogue, matcherConfig, promptVariant, skeletonModel);
+  const runResults = await runSuite(runId, reportsDir, fixturesDir, catalogue, matcherConfig, promptVariant, skeletonModel, wordFilter);
 
   console.log(
     `\nDone: ${runResults.greenCount} green, ${runResults.amberCount} amber, ${runResults.redCount} red`,

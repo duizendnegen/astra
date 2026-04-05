@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: match() accepts skeleton array
 The `match()` function SHALL accept `skeletons: Skeleton[]`, a `catalogue: Star[]` parameter,
@@ -142,18 +142,7 @@ all `constellationStars` and log it as a percentage of `ORION_SPAN_DEG` (25°).
 - **WHEN** a match is returned
 - **THEN** the console logs the angular span and percentage, e.g. `[matcher] pattern size: 18.3° (73% of Orion)`
 
-## Removed Requirements
-
-### Requirement: Client-side catalogue loading
-**Reason**: The star catalogue is now loaded server-side. The frontend no longer needs `stars.json`.
-**Migration**: Remove `loadCatalogue()` and `getCatalogue()` calls from `frontend/src/main.ts`.
-The `loadConstellationLines()` function in `frontend/src/catalogue.ts` is unaffected and remains.
-
-### Requirement: Client-side match() call
-**Reason**: Matching now runs in the backend as part of `/api/constellation`. The frontend
-receives a ready-to-render `constellation` result directly.
-**Migration**: Remove the `import { match } from './matcher'` import and the `match()` call
-from `frontend/src/main.ts`. Delete `frontend/src/matcher.ts`.
+## REMOVED Requirements
 
 ### Requirement: maxConstellationStars cap
 **Reason**: Hard cap silently drops vertices on complex skeletons, causing the rendered shape to

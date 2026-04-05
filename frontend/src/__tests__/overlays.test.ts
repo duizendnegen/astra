@@ -10,9 +10,9 @@ function params(query: string): URLSearchParams {
 // ── Feature flag combinations ─────────────────────────────────────────────
 
 describe('overlay feature flag combinations', () => {
-  it('neither flag active', () => {
+  it('showLines on by default, showStars off', () => {
     const f = getFeatures(params(''));
-    expect(f.showLines).toBe(false);
+    expect(f.showLines).toBe(true);
     expect(f.showStars).toBe(false);
   });
 
@@ -24,7 +24,7 @@ describe('overlay feature flag combinations', () => {
 
   it('only show_stars active', () => {
     const f = getFeatures(params('show_stars=1'));
-    expect(f.showLines).toBe(false);
+    expect(f.showLines).toBe(true);
     expect(f.showStars).toBe(true);
   });
 

@@ -6,20 +6,24 @@ const log = createLogger('matcher');
 // ── Public config types ───────────────────────────────────────────────────
 
 export type ModelName = 'vertex-penalty' | 'skeleton-shape';
+export type GeneratorName = 'anchor-pair' | 'single-sweep' | 'any-vertex';
+export type ScorerName = 'edge-ratio' | 'vertex-fit' | 'procrustes' | 'procrustes-unit-scale';
 
 /** Pass as the optional fourth argument to match() to select a model and/or
  *  override individual constants. All fields except `model` are optional —
  *  omitted fields fall back to the named model's defaults. */
 export interface MatcherConfig {
   model: ModelName;
+  generator?: GeneratorName;
+  scorer?: ScorerName;
   // Search strategy
   seedMaxMag?: number;
   patchRadius?: number;
   maxPatchRadius?: number;
   patchRadiusStep?: number;
+  maxSpanDeg?: number;
   qualityThreshold?: number;
   coverageThreshold?: number;
-  minMatchedStars?: number;
   rotationSteps?: number;
   skeletonFillRatio?: number;
   // Scoring
@@ -28,23 +32,26 @@ export interface MatcherConfig {
   vertexBonusJoint?: number;
   vertexSigma?: number;
   brightnessWeight?: number;
-  maxConstellationStars?: number;
   penaltyWeight?: number;
   chamferCap?: number;
   skeletonShapeRefine?: boolean;
   assignmentAlgorithm?: 'greedy' | 'hungarian';
+  phase2Cap?: number;
+  phase3Cap?: number;
 }
 
 // ── Internal types ────────────────────────────────────────────────────────
 
 interface ModelDefaults {
+  generator: GeneratorName;
+  scorer: ScorerName;
   seedMaxMag: number;
   patchRadius: number;
   maxPatchRadius: number;
   patchRadiusStep: number;
+  maxSpanDeg: number;
   qualityThreshold: number;
   coverageThreshold: number;
-  minMatchedStars: number;
   rotationSteps: number;
   skeletonFillRatio: number;
   distanceThreshold: number;
@@ -52,7 +59,6 @@ interface ModelDefaults {
   vertexBonusJoint: number;
   vertexSigma: number;
   brightnessWeight: number;
-  maxConstellationStars: number;
   penaltyWeight: number;
   chamferCap: number;
   skeletonShapeRefine: boolean;
@@ -141,13 +147,15 @@ export function vertexDegrees(edges: [number, number][], pointCount: number): nu
 // At the default 10° patch: distanceThreshold=0.15 → 1.5°, vertexSigma=0.12 → 1.2°.
 // Validated empirically against 42-word test suite (see test-harness/).
 const BASE_DEFAULTS: ModelDefaults = {
+  generator: 'anchor-pair',
+  scorer: 'procrustes-unit-scale',
   seedMaxMag: 3,
   patchRadius: 10,        // degrees
   maxPatchRadius: 15,     // degrees
   patchRadiusStep: 2.5,   // degrees
+  maxSpanDeg: 40,         // degrees
   qualityThreshold: 0.70,
   coverageThreshold: 0.99,
-  minMatchedStars: 6,
   rotationSteps: 24,      // every 15°
   skeletonFillRatio: 0.8, // skeleton longest axis = 80% of patch diameter
   distanceThreshold: 0.15, // 1.5° at default patch
@@ -155,7 +163,6 @@ const BASE_DEFAULTS: ModelDefaults = {
   vertexBonusJoint: 0.4,
   vertexSigma: 0.12,      // 1.2° at default patch
   brightnessWeight: 0.3,
-  maxConstellationStars: 8,
   penaltyWeight: 0.3,
   chamferCap: 1.0,
   skeletonShapeRefine: false,
@@ -180,7 +187,7 @@ const VERTEX_PENALTY_MODEL: ScoringModel = {
   },
 };
 
-// skeleton-shape model — scoring is handled as a special path in scoreAndMatch;
+// skeleton-shape model — scoring is handled as a special path in scoreAndMatch (legacy);
 // these interface methods are not called for this model.
 const SKELETON_SHAPE_MODEL: ScoringModel = {
   defaults: { ...BASE_DEFAULTS },
@@ -427,7 +434,7 @@ export function selectConstellationStars(
   matchedNorm: Point2D[],
   cfg: ResolvedConfig = resolveConfig(),
 ): Star[] {
-  const nVtx = Math.min(skelNorm.length, cfg.maxConstellationStars);
+  const nVtx = skelNorm.length;
   const nStars = matchedStars.length;
   if (nStars === 0) return [];
 
@@ -506,174 +513,293 @@ export function selectConstellationStars(
   return result;
 }
 
+// ── Score helpers ─────────────────────────────────────────────────────────
+
+function computeSpan(physVerts: [number, number][]): number {
+  let maxDist = 0;
+  for (let i = 0; i < physVerts.length; i++) {
+    for (let j = i + 1; j < physVerts.length; j++) {
+      const d = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
+      if (d > maxDist) maxDist = d;
+    }
+  }
+  return maxDist || 1;
+}
+
+function computeShapeScore(
+  constellationStars: Star[],
+  physVerts: [number, number][],
+  edges: [number, number][],
+): number {
+  const n = constellationStars.length;
+  let total = 0, cnt = 0;
+  for (const [i, j] of edges) {
+    if (i >= n || j >= n) continue;
+    const si = constellationStars[i], sj = constellationStars[j];
+    const starLen = distanceDeg(si.ra, si.dec, sj.ra, sj.dec);
+    const skelLen = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
+    if (skelLen > 0) total += Math.abs(starLen / skelLen - 1);
+    cnt++;
+  }
+  return cnt > 0 ? 1 / (1 + total / cnt) : 0;
+}
+
+function computeVertexFitScore(
+  constellationStars: Star[],
+  physVerts: [number, number][],
+  span: number,
+): number {
+  const n = constellationStars.length;
+  if (n === 0) return 0;
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    total += distanceDeg(constellationStars[i].ra, constellationStars[i].dec, physVerts[i][0], physVerts[i][1]) / span;
+  }
+  return 1 / (1 + total / n);
+}
+
+function computeProcrustesScore(
+  constellationStars: Star[],
+  physVerts: [number, number][],
+  span: number,
+): number {
+  // TODO(procrustes-icp): single-pass Procrustes only, no ICP iterations
+  const n = constellationStars.length;
+  if (n < 2) return 0;
+
+  // Centroids
+  let pRa = 0, pDec = 0, qRa = 0, qDec = 0;
+  for (let i = 0; i < n; i++) {
+    pRa += constellationStars[i].ra; pDec += constellationStars[i].dec;
+    qRa += physVerts[i][0]; qDec += physVerts[i][1];
+  }
+  pRa /= n; pDec /= n; qRa /= n; qDec /= n;
+
+  // Centred arrays: A = target (stars), B = source (vertices)
+  const A: [number, number][] = constellationStars.map(s => [s.ra - pRa, s.dec - pDec]);
+  const B: [number, number][] = physVerts.slice(0, n).map(v => [v[0] - qRa, v[1] - qDec]);
+
+  // Cross-covariance H = B^T A
+  let h00 = 0, h01 = 0, h10 = 0, h11 = 0;
+  for (let i = 0; i < n; i++) {
+    h00 += B[i][0] * A[i][0]; h01 += B[i][0] * A[i][1];
+    h10 += B[i][1] * A[i][0]; h11 += B[i][1] * A[i][1];
+  }
+
+  // Optimal rotation angle (Umeyama 2D closed form)
+  const angle = Math.atan2(h01 - h10, h00 + h11);
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+
+  // Rotate B: BR_i = R * B_i
+  const BR: [number, number][] = B.map(([x, y]) => [x * cosA - y * sinA, x * sinA + y * cosA]);
+
+  // Optimal scale: s = trace(R^T H) / ||B||_F^2
+  const traceRTH = cosA * (h00 + h11) + sinA * (h10 - h01);
+  const normBSq = B.reduce((s, b) => s + b[0] * b[0] + b[1] * b[1], 0);
+  const scale = normBSq > 0 ? traceRTH / normBSq : 1;
+
+  // Mean Euclidean residual in RA/Dec degree approximation
+  let totalResidual = 0;
+  for (let i = 0; i < n; i++) {
+    const ex = A[i][0] - scale * BR[i][0];
+    const ey = A[i][1] - scale * BR[i][1];
+    totalResidual += Math.sqrt(ex * ex + ey * ey);
+  }
+  return 1 / (1 + (totalResidual / n) / span);
+}
+
+function computeProcrustesUnitScaleScore(
+  constellationStars: Star[],
+  physVerts: [number, number][],
+): number {
+  // Like computeProcrustesScore but scale is forced to 1.0 and residual is
+  // normalised by ORION_SPAN_DEG (size-agnostic reference).
+  const n = constellationStars.length;
+  if (n < 2) return 0;
+
+  // Centroids
+  let pRa = 0, pDec = 0, qRa = 0, qDec = 0;
+  for (let i = 0; i < n; i++) {
+    pRa += constellationStars[i].ra; pDec += constellationStars[i].dec;
+    qRa += physVerts[i][0]; qDec += physVerts[i][1];
+  }
+  pRa /= n; pDec /= n; qRa /= n; qDec /= n;
+
+  const A: [number, number][] = constellationStars.map(s => [s.ra - pRa, s.dec - pDec]);
+  const B: [number, number][] = physVerts.slice(0, n).map(v => [v[0] - qRa, v[1] - qDec]);
+
+  // Cross-covariance H = B^T A
+  let h00 = 0, h01 = 0, h10 = 0, h11 = 0;
+  for (let i = 0; i < n; i++) {
+    h00 += B[i][0] * A[i][0]; h01 += B[i][0] * A[i][1];
+    h10 += B[i][1] * A[i][0]; h11 += B[i][1] * A[i][1];
+  }
+
+  const angle = Math.atan2(h01 - h10, h00 + h11);
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const BR: [number, number][] = B.map(([x, y]) => [x * cosA - y * sinA, x * sinA + y * cosA]);
+
+  // Scale forced to 1.0 — rotation + translation only
+  let totalResidual = 0;
+  for (let i = 0; i < n; i++) {
+    const ex = A[i][0] - BR[i][0];
+    const ey = A[i][1] - BR[i][1];
+    totalResidual += Math.sqrt(ex * ex + ey * ey);
+  }
+  return 1 / (1 + (totalResidual / n) / ORION_SPAN_DEG);
+}
+
+function computeSpanFactor(physSpan: number): number {
+  // Flat zone [20°, 30°]; penalise placements outside with exp(-excess / ORION_SPAN_DEG)
+  const excess = Math.max(0, physSpan - 30, 20 - physSpan);
+  return Math.exp(-excess / ORION_SPAN_DEG);
+}
+
 // ── Core matching ─────────────────────────────────────────────────────────
 
 interface ScoreResult {
   score: number;
+  shapeScore: number;
+  vertexFitScore: number;
+  procrustesScore?: number;
   stars: Star[];
   constellationStars: Star[];
   skeletonRaDec: { ra: number; dec: number }[];
-  edgeStarChains?: Star[][];
+  phase1Candidates: number;
+  phase2Candidates: number;
+  phase3Candidates: number;
 }
 
-function scoreAndMatch(
-  skelPoints: Point2D[],
-  edges: [number, number][],
-  candidates: Star[],
-  rotDeg: number,
-  seed: Star,
-  cfg: ResolvedConfig,
-  anchorVertex: number = -1,
-): ScoreResult {
-  let anchored: Point2D[];
-  if (anchorVertex >= 0 && anchorVertex < skelPoints.length) {
-    const [ax, ay] = skelPoints[anchorVertex];
-    anchored = skelPoints.map(([x, y]) => [x - ax, ay - y]);
-  } else {
-    anchored = skelPoints.map(([x, y]) => [x - 0.5, 0.5 - y]);
-  }
-  const scale = cfg.skeletonFillRatio * 2;
-  const skelNorm: Point2D[] = rotate(anchored, rotDeg).map(([x, y]) => [x * scale, y * scale]);
+// ── Phase helpers ─────────────────────────────────────────────────────────
 
-  const starNorm: Point2D[] = candidates.map((s) => [
-    (s.ra - seed.ra) / cfg.patchRadius,
-    (s.dec - seed.dec) / cfg.patchRadius,
-  ]);
-
-  const degrees = vertexDegrees(edges, skelPoints.length);
-
-  // ── skeleton-shape model: edge-length scoring ──────────────────────────
-  if (cfg.model === 'skeleton-shape') {
-    // NN assignment: map each skeleton vertex to the nearest unassigned candidate
-    const assignment = new Array<number>(skelNorm.length).fill(-1);
-    const used = new Set<number>();
-    for (let k = 0; k < skelNorm.length; k++) {
-      let bestDist = Infinity;
-      let bestStar = -1;
-      for (let j = 0; j < starNorm.length; j++) {
-        if (used.has(j)) continue;
-        const dx = starNorm[j][0] - skelNorm[k][0];
-        const dy = starNorm[j][1] - skelNorm[k][1];
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < bestDist) { bestDist = d; bestStar = j; }
-      }
-      if (bestStar >= 0) { assignment[k] = bestStar; used.add(bestStar); }
-    }
-
-    // Optional hill-climbing: swap vertex assignments to reduce edge-length mismatch
-    if (cfg.skeletonShapeRefine) {
-      function totalMismatch(asgn: number[]): number {
-        let total = 0;
-        for (const [i, j] of edges) {
-          if (asgn[i] < 0 || asgn[j] < 0) continue;
-          const si = starNorm[asgn[i]], sj = starNorm[asgn[j]];
-          const starLen = Math.sqrt((si[0] - sj[0]) ** 2 + (si[1] - sj[1]) ** 2);
-          const vi = skelNorm[i], vj = skelNorm[j];
-          const skelLen = Math.sqrt((vi[0] - vj[0]) ** 2 + (vi[1] - vj[1]) ** 2);
-          total += Math.abs(starLen - skelLen);
-        }
-        return total;
-      }
-      let current = totalMismatch(assignment);
-      for (let iter = 0; iter < 50; iter++) {
-        let improved = false;
-        for (let a = 0; a < assignment.length; a++) {
-          for (let b = a + 1; b < assignment.length; b++) {
-            const tmp = assignment[a];
-            assignment[a] = assignment[b];
-            assignment[b] = tmp;
-            const next = totalMismatch(assignment);
-            if (next < current) {
-              current = next;
-              improved = true;
-            } else {
-              assignment[b] = assignment[a];
-              assignment[a] = tmp;
-            }
-          }
-        }
-        if (!improved) break;
-      }
-    }
-
-    // Score = 1 / (1 + mean(|starEdgeLen - skelEdgeLen|))
-    let totalMismatchVal = 0;
-    let edgeCount = 0;
-    for (const [i, j] of edges) {
-      if (assignment[i] < 0 || assignment[j] < 0) continue;
-      const si = starNorm[assignment[i]], sj = starNorm[assignment[j]];
-      const starLen = Math.sqrt((si[0] - sj[0]) ** 2 + (si[1] - sj[1]) ** 2);
-      const vi = skelNorm[i], vj = skelNorm[j];
-      const skelLen = Math.sqrt((vi[0] - vj[0]) ** 2 + (vi[1] - vj[1]) ** 2);
-      totalMismatchVal += Math.abs(starLen - skelLen);
-      edgeCount++;
-    }
-    const shapeScore = edgeCount > 0 ? 1 / (1 + totalMismatchVal / edgeCount) : 0;
-
-    // Constellation stars are those assigned to skeleton vertices (in vertex order, no cap)
-    const constellationStars: Star[] = [];
-    for (let k = 0; k < skelNorm.length; k++) {
-      if (assignment[k] >= 0) constellationStars.push(candidates[assignment[k]]);
-    }
-
-    const matchedStars = [...used].map((idx) => candidates[idx]);
-    const skeletonRaDec = skelNorm.map(([nx, ny]) => ({
-      ra: nx * cfg.patchRadius + seed.ra,
-      dec: ny * cfg.patchRadius + seed.dec,
-    }));
-
-    return { score: shapeScore, stars: matchedStars, constellationStars, skeletonRaDec };
-  }
-
-  const matched: Array<{ star: Star; norm: Point2D; d: number }> = [];
-  for (let j = 0; j < candidates.length; j++) {
-    const d = effectiveDist(starNorm[j], skelNorm, edges, degrees, cfg);
-    if (d < cfg.distanceThreshold) {
-      matched.push({ star: candidates[j], norm: starNorm[j], d });
-    }
-  }
-
-  matched.sort((a, b) => a.d - b.d);
-
-  let score: number;
-  if (matched.length === 0) {
-    score = 0;
-  } else {
-    // Forward: mean min-distance from each skeleton vertex to nearest matched star, capped at chamferCap
-    let sumForward = 0;
-    for (const [vx, vy] of skelNorm) {
-      let minDist = cfg.chamferCap;
-      for (const m of matched) {
-        const dx = m.norm[0] - vx;
-        const dy = m.norm[1] - vy;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < minDist) minDist = d;
-      }
-      sumForward += minDist;
-    }
-    const meanForward = sumForward / Math.max(1, skelNorm.length);
-
-    // Reverse: mean effective distance of matched stars (already computed during matching)
-    const meanReverse = matched.reduce((sum, m) => sum + m.d, 0) / matched.length;
-
-    score = 1 / (1 + meanForward + meanReverse);
-  }
-
-  const constellationStars = selectConstellationStars(
-    skelNorm,
-    edges,
-    degrees,
-    candidates,
-    starNorm,
-    cfg,
+function medianEdgeLength(physVerts: [number, number][], edges: [number, number][]): number {
+  const lengths = edges.map(([i, j]) =>
+    distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]),
   );
+  if (lengths.length === 0) return 0;
+  lengths.sort((a, b) => a - b);
+  const mid = Math.floor(lengths.length / 2);
+  return lengths.length % 2 === 1 ? lengths[mid] : (lengths[mid - 1] + lengths[mid]) / 2;
+}
 
-  const skeletonRaDec = skelNorm.map(([nx, ny]) => ({
-    ra: nx * cfg.patchRadius + seed.ra,
-    dec: ny * cfg.patchRadius + seed.dec,
-  }));
+// ── Shared Phase 2 + 3 helper ─────────────────────────────────────────────
 
-  return { score, stars: matched.map((m) => m.star), constellationStars, skeletonRaDec };
+interface PhaseCandidate {
+  score: number;
+  seed: Star;
+  physVerts: [number, number][];
+}
+
+// SpatialGrid is defined after this function in the file, but by runtime all module
+// code has been executed before match() is called, so this is safe.
+function runPhase2And3(
+  phase1Top: PhaseCandidate[],
+  edges: [number, number][],
+  nVtx: number,
+  cfg: ResolvedConfig,
+  grid: SpatialGrid,
+): (ScoreResult & { seed: Star }) | null {
+  const GREEDY_K = 50;
+  const HUNGARIAN_K = cfg.phase3Cap ?? 20;
+  const GREEDY_SEARCH_R = 3;
+  const K_PER_VERTEX = 20;
+
+  const phase1Count = phase1Top.length;
+
+  // Phase 2: greedy NN → edge-length score to narrow down to HUNGARIAN_K candidates
+  const greedyTop: PhaseCandidate[] = [];
+  const phase2Limit = cfg.phase2Cap ?? GREEDY_K * 10;
+  const phase2Input = phase1Top.slice(0, Math.min(phase2Limit, phase1Top.length));
+  const phase2Count = phase2Input.length;
+  for (const cand of phase2Input) {
+    const { physVerts, seed } = cand;
+    const used = new Set<number>();
+    const greedyStars: (Star | null)[] = [];
+    for (let k = 0; k < nVtx; k++) {
+      const star = grid.nearest(physVerts[k][0], physVerts[k][1], GREEDY_SEARCH_R, used);
+      greedyStars.push(star);
+      if (star) used.add(star.id);
+    }
+    let total = 0, cnt = 0;
+    for (const [i, j] of edges) {
+      const si = greedyStars[i], sj = greedyStars[j];
+      if (!si || !sj) { total += 1; cnt++; continue; }
+      const starLen = distanceDeg(si.ra, si.dec, sj.ra, sj.dec);
+      const skelLen = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
+      if (skelLen > 0) total += Math.abs(starLen / skelLen - 1);
+      cnt++;
+    }
+    const score = cnt > 0 ? 1 / (1 + total / cnt) : 0;
+    greedyTop.push({ score, seed, physVerts });
+  }
+  greedyTop.sort((a, b) => b.score - a.score);
+
+  // Phase 3: full Hungarian assignment + multi-score evaluation
+  let bestResult: (ScoreResult & { seed: Star }) | null = null;
+
+  const phase3Slice = greedyTop.slice(0, HUNGARIAN_K);
+  const phase3Count = phase3Slice.length;
+  for (const cand of phase3Slice) {
+    const { physVerts, seed } = cand;
+
+    const searchR = Math.max(1.5, medianEdgeLength(physVerts, edges) * 1.5);
+    const nearbyMap = new Map<number, Star>();
+    for (let k = 0; k < nVtx; k++) {
+      const [ra, dec] = physVerts[k];
+      const stars = grid.inRadius(ra, dec, searchR);
+      stars.sort((a, b) =>
+        distanceDeg(ra, dec, a.ra, a.dec) - distanceDeg(ra, dec, b.ra, b.dec),
+      );
+      for (const s of stars.slice(0, K_PER_VERTEX)) nearbyMap.set(s.id, s);
+    }
+    const nearby = [...nearbyMap.values()];
+    if (nearby.length < nVtx) continue;
+
+    const cost: number[][] = physVerts.map(([ra, dec]) =>
+      nearby.map(s => distanceDeg(ra, dec, s.ra, s.dec) + cfg.brightnessWeight * (s.mag / 6)),
+    );
+    const assignment = hungarianAssign(cost);
+    const constellationStars = assignment.map(j => nearby[j]);
+
+    const span = computeSpan(physVerts);
+    const shapeScore = computeShapeScore(constellationStars, physVerts, edges);
+    const vertexFitScore = computeVertexFitScore(constellationStars, physVerts, span);
+    const procrustesScore = cfg.scorer === 'procrustes'
+      ? computeProcrustesScore(constellationStars, physVerts, span)
+      : cfg.scorer === 'procrustes-unit-scale'
+        ? computeProcrustesUnitScaleScore(constellationStars, physVerts)
+        : undefined;
+
+    let selectionScore: number;
+    if (cfg.scorer === 'vertex-fit') {
+      selectionScore = vertexFitScore;
+    } else if (cfg.scorer === 'procrustes') {
+      selectionScore = procrustesScore ?? 0;
+    } else if (cfg.scorer === 'procrustes-unit-scale') {
+      const procrustesUnitScaleScore = procrustesScore ?? 0;
+      selectionScore = procrustesUnitScaleScore * computeSpanFactor(span);
+    } else {
+      selectionScore = shapeScore;
+    }
+
+    if (!bestResult || selectionScore > bestResult.score) {
+      bestResult = {
+        score: selectionScore,
+        shapeScore,
+        vertexFitScore,
+        procrustesScore,
+        stars: nearby,
+        constellationStars,
+        skeletonRaDec: physVerts.map(([ra, dec]) => ({ ra, dec })),
+        seed,
+        phase1Candidates: phase1Count,
+        phase2Candidates: phase2Count,
+        phase3Candidates: phase3Count,
+      };
+    }
+  }
+
+  return bestResult;
 }
 
 // ── Spatial grid for fast nearest-star queries ───────────────────────────
@@ -739,13 +865,7 @@ class SpatialGrid {
   }
 }
 
-// ── Pairwise anchor search ────────────────────────────────────────────────
-
-interface AnchorCandidate {
-  score: number;
-  anchorStar: Star;
-  physVerts: [number, number][];
-}
+// ── Generators ───────────────────────────────────────────────────────────
 
 function pairwiseAnchorSearch(
   skeleton: Skeleton,
@@ -756,7 +876,6 @@ function pairwiseAnchorSearch(
 ): (ScoreResult & { seed: Star }) | null {
   const { points, edges } = skeleton;
   const nVtx = points.length;
-  const capped = Math.min(nVtx, cfg.maxConstellationStars);
 
   // Normalise skeleton to ~[-0.5, 0.5]; flip y for sky convention (north = up)
   const normPts: Point2D[] = normalise(points).map(([x, y]) => [x, -y]);
@@ -773,26 +892,17 @@ function pairwiseAnchorSearch(
   }
   if (maxAxisDist < 0.01) return null; // degenerate skeleton
 
-  // Physical span range for the anchor pair
   const MIN_SPAN = 2;   // degrees
   const MAX_SPAN = 25;  // degrees
-
-  // Phase 1 prescreen: cell-coverage score (O(1) per vertex — no distance computation)
-  // Phase 2 greedy: keep top GREEDY_K from phase 1, run greedy NN, compute edge-length score
-  // Phase 3 Hungarian: refine top HUNGARIAN_K with full optimal assignment
   const PRESCREEN_K = 500;
-  const GREEDY_K = 50;
-  const HUNGARIAN_K = 20;
+  const SECONDARY_MAG = 5.0;
 
-  const prescreenTop: { score: number; anchorStar: Star; physVerts: [number, number][] }[] = [];
+  const phase1Top: PhaseCandidate[] = [];
   let prescreenMin = -1;
 
   const anchors = catalogue.filter(s => s.mag <= cfg.seedMaxMag && !excludeSeeds.has(s.id));
-  // Secondary anchor mag limit — controls search breadth vs. speed.
-  // mag ≤ 5 covers all naked-eye stars (~5000 total); refine later if needed.
-  const SECONDARY_MAG = 5.0;
   const t0 = performance.now();
-  log.debug({ nVtx, capped, anchors: anchors.length, axisU, axisV, maxAxisDist: maxAxisDist.toFixed(3) }, 'pairwise start');
+  log.debug({ nVtx, anchors: anchors.length, axisU, axisV, maxAxisDist: maxAxisDist.toFixed(3) }, 'pairwise start');
 
   // Single reusable buffer — allocated once, mutated per iteration (zero alloc in hot path)
   const buf: [number, number][] = normPts.map(() => [0, 0] as [number, number]);
@@ -805,16 +915,16 @@ function pairwiseAnchorSearch(
       if (starB.id === starA.id) continue;
       const physDist = distanceDeg(starA.ra, starA.dec, starB.ra, starB.dec);
       if (physDist < MIN_SPAN) continue;
+      if (physDist > cfg.maxSpanDeg) continue;
 
       const scale = physDist / maxAxisDist;
 
       for (let ori = 0; ori < 2; ori++) {
         const aS = ori === 0 ? starA : starB;
         const bS = ori === 0 ? starB : starA;
-        const uI = axisU, vI = axisV;
 
-        const [ux, uy] = normPts[uI];
-        const [vx, vy] = normPts[vI];
+        const [ux, uy] = normPts[axisU];
+        const [vx, vy] = normPts[axisV];
         const skelDX = vx - ux, skelDY = vy - uy;
         const skelLen = Math.sqrt(skelDX * skelDX + skelDY * skelDY);
         const skyDX = bS.ra - aS.ra, skyDY = bS.dec - aS.dec;
@@ -832,24 +942,22 @@ function pairwiseAnchorSearch(
           buf[k][1] = aS.dec + (rx * sinR + ry * cosR) * scale;
         }
 
-        // Phase 1: count vertices with a star in their spatial cell (O(capped) cell lookups)
+        // Phase 1: count all vertices with a star in their spatial cell
         let covered = 0;
-        for (let k = 0; k < capped; k++) {
+        for (let k = 0; k < nVtx; k++) {
           if (grid.hasStarNear(buf[k][0], buf[k][1])) covered++;
         }
-        const score = covered / capped;
+        const score = covered / nVtx;
 
         if (score > prescreenMin) {
-          // Only copy the buffer when it makes the cut
           const physVerts = buf.map(v => [v[0], v[1]] as [number, number]);
-          prescreenTop.push({ score, anchorStar: aS, physVerts });
-          // Batch-trim: only sort+trim when buffer doubles, amortising cost to O(N log K)
-          if (prescreenTop.length >= PRESCREEN_K * 2) {
-            prescreenTop.sort((a, b) => b.score - a.score);
-            prescreenTop.length = PRESCREEN_K;
-            prescreenMin = prescreenTop[prescreenTop.length - 1].score;
-          } else if (prescreenTop.length === 1) {
-            prescreenMin = 0; // allow everything until we have K items
+          phase1Top.push({ score, seed: aS, physVerts });
+          if (phase1Top.length >= PRESCREEN_K * 2) {
+            phase1Top.sort((a, b) => b.score - a.score);
+            phase1Top.length = PRESCREEN_K;
+            prescreenMin = phase1Top[phase1Top.length - 1].score;
+          } else if (phase1Top.length === 1) {
+            prescreenMin = 0;
           }
         }
       }
@@ -857,95 +965,188 @@ function pairwiseAnchorSearch(
   }
 
   const tPrescreen = performance.now() - t0;
-  log.debug({ candidates: prescreenTop.length, durationMs: tPrescreen.toFixed(0), prescreenMin: prescreenMin.toFixed(2) }, 'prescreen done');
-  if (prescreenTop.length === 0) { log.debug('prescreenTop empty → null'); return null; }
-  prescreenTop.sort((a, b) => b.score - a.score);
-  log.debug({ topScore: prescreenTop[0].score.toFixed(2), anchor: prescreenTop[0].anchorStar.id }, 'prescreen top');
+  log.debug({ candidates: phase1Top.length, durationMs: tPrescreen.toFixed(0) }, 'prescreen done');
+  if (phase1Top.length === 0) { log.debug('phase1Top empty → null'); return null; }
+  phase1Top.sort((a, b) => b.score - a.score);
+  log.debug({ topScore: phase1Top[0].score.toFixed(2), anchor: phase1Top[0].seed.id }, 'prescreen top');
 
-  // Phase 2: greedy NN assignment → edge-length ratio score
-  const greedyTop: { score: number; anchorStar: Star; physVerts: [number, number][] }[] = [];
-  const GREEDY_SEARCH_R = 3; // degrees — fixed, reasonable for any scale
+  const result = runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
+  log.debug({ bestScore: result?.score.toFixed(3) ?? 'none' }, 'pairwise done');
+  return result;
+}
 
-  for (const cand of prescreenTop.slice(0, Math.min(GREEDY_K * 10, prescreenTop.length))) {
-    const { physVerts, anchorStar } = cand;
-    const used = new Set<number>();
-    const greedyStars: (Star | null)[] = [];
-    for (let k = 0; k < capped; k++) {
-      const star = grid.nearest(physVerts[k][0], physVerts[k][1], GREEDY_SEARCH_R, used);
-      greedyStars.push(star);
-      if (star) used.add(star.id);
+function singleSweepSearch(
+  skeleton: Skeleton,
+  catalogue: Star[],
+  excludeSeeds: Set<number>,
+  cfg: ResolvedConfig,
+  grid: SpatialGrid,
+): (ScoreResult & { seed: Star }) | null {
+  const { points, edges } = skeleton;
+  const nVtx = points.length;
+
+  const normPts: Point2D[] = normalise(points).map(([x, y]) => [x, -y]);
+
+  // Find maximum pairwise distance in normalized coords (skeleton "diameter")
+  let maxAxisDist = -1;
+  for (let a = 0; a < normPts.length; a++) {
+    for (let b = a + 1; b < normPts.length; b++) {
+      const dx = normPts[b][0] - normPts[a][0], dy = normPts[b][1] - normPts[a][1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxAxisDist) maxAxisDist = d;
     }
-
-    let total = 0, cnt = 0;
-    for (const [i, j] of edges) {
-      if (i >= capped || j >= capped) continue;
-      const si = greedyStars[i], sj = greedyStars[j];
-      if (!si || !sj) { total += 1; cnt++; continue; }
-      const starLen = distanceDeg(si.ra, si.dec, sj.ra, sj.dec);
-      const skelEdgeLen = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
-      if (skelEdgeLen > 0) total += Math.abs(starLen / skelEdgeLen - 1);
-      cnt++;
-    }
-    const score = cnt > 0 ? 1 / (1 + total / cnt) : 0;
-    greedyTop.push({ score, anchorStar, physVerts });
   }
-  greedyTop.sort((a, b) => b.score - a.score);
-  const tGreedy = performance.now() - t0 - tPrescreen;
-  log.debug({ candidates: greedyTop.length, durationMs: tGreedy.toFixed(0), topScore: greedyTop[0]?.score.toFixed(3) ?? 'n/a' }, 'greedy done');
+  if (maxAxisDist < 0.01) return null;
 
-  // Phase 3: Hungarian refinement on top candidates
-  let bestResult: (ScoreResult & { seed: Star }) | null = null;
+  const SCALES_DEG = [5, 10, 15, 20, 25, 30];
+  const CANDIDATE_CAP = 2000;
+  const rotSteps = cfg.rotationSteps;
 
-  for (const cand of greedyTop.slice(0, HUNGARIAN_K)) {
-    const { physVerts, anchorStar } = cand;
+  const phase1Top: PhaseCandidate[] = [];
+  let prescreenMin = -1;
 
-    // Gather the K-nearest stars per vertex, union them — keeps Hungarian matrix small
-    const K_PER_VERTEX = 20;
-    const nearbyMap = new Map<number, Star>();
-    for (let k = 0; k < capped; k++) {
-      const [ra, dec] = physVerts[k];
-      let stars = grid.inRadius(ra, dec, 3);
-      if (stars.length < K_PER_VERTEX) stars = grid.inRadius(ra, dec, 6);
-      stars.sort((a, b) =>
-        distanceDeg(ra, dec, a.ra, a.dec) - distanceDeg(ra, dec, b.ra, b.dec),
-      );
-      for (const s of stars.slice(0, K_PER_VERTEX)) nearbyMap.set(s.id, s);
-    }
-    const nearby = [...nearbyMap.values()];
-    if (nearby.length < cfg.minMatchedStars) continue;
+  for (const seed of catalogue) {
+    if (excludeSeeds.has(seed.id)) continue;
+    if (seed.mag > cfg.seedMaxMag) continue;
 
-    const cost: number[][] = physVerts.slice(0, capped).map(([ra, dec]) =>
-      nearby.map(s => distanceDeg(ra, dec, s.ra, s.dec) + cfg.brightnessWeight * (s.mag / 6)),
-    );
-    const assignment = hungarianAssign(cost);
-    const constellationStars = assignment.map(j => nearby[j]);
+    for (let ri = 0; ri < rotSteps; ri++) {
+      const rotRad = ((360 / rotSteps) * ri * Math.PI) / 180;
+      const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
 
-    let total = 0, cnt = 0;
-    for (const [i, j] of edges) {
-      if (i >= capped || j >= capped) continue;
-      const si = constellationStars[i], sj = constellationStars[j];
-      const starLen = distanceDeg(si.ra, si.dec, sj.ra, sj.dec);
-      const skelLen = distanceDeg(physVerts[i][0], physVerts[i][1], physVerts[j][0], physVerts[j][1]);
-      if (skelLen > 0) total += Math.abs(starLen / skelLen - 1);
-      cnt++;
-    }
-    const score = cnt > 0 ? 1 / (1 + total / cnt) : 0;
+      for (const spanDeg of SCALES_DEG) {
+        if (spanDeg > cfg.maxSpanDeg) continue;
+        const physScale = spanDeg / maxAxisDist;
+        const physVerts: [number, number][] = normPts.map(([nx, ny]) => [
+          seed.ra + (nx * cosR - ny * sinR) * physScale,
+          seed.dec + (nx * sinR + ny * cosR) * physScale,
+        ]);
 
-    if (!bestResult || score > bestResult.score) {
-      bestResult = {
-        score,
-        stars: nearby,
-        constellationStars,
-        skeletonRaDec: physVerts.map(([ra, dec]) => ({ ra, dec })),
-        seed: anchorStar,
-      };
+        let covered = 0;
+        for (let k = 0; k < nVtx; k++) {
+          if (grid.hasStarNear(physVerts[k][0], physVerts[k][1])) covered++;
+        }
+        const score = covered / nVtx;
+
+        if (score > prescreenMin) {
+          phase1Top.push({ score, seed, physVerts });
+          if (phase1Top.length >= CANDIDATE_CAP * 2) {
+            phase1Top.sort((a, b) => b.score - a.score);
+            phase1Top.length = CANDIDATE_CAP;
+            prescreenMin = phase1Top[phase1Top.length - 1].score;
+          } else if (phase1Top.length === 1) {
+            prescreenMin = 0;
+          }
+        }
+      }
     }
   }
 
-  const tHungarian = performance.now() - t0 - tPrescreen - tGreedy;
-  log.debug({ durationMs: tHungarian.toFixed(0), bestScore: bestResult?.score.toFixed(3) ?? 'none' }, 'hungarian done');
+  if (phase1Top.length === 0) return null;
+  phase1Top.sort((a, b) => b.score - a.score);
+  return runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
+}
 
-  return bestResult;
+function anyVertexSearch(
+  skeleton: Skeleton,
+  catalogue: Star[],
+  excludeSeeds: Set<number>,
+  cfg: ResolvedConfig,
+  grid: SpatialGrid,
+): (ScoreResult & { seed: Star }) | null {
+  const { points, edges } = skeleton;
+  const nVtx = points.length;
+
+  const normPts: Point2D[] = normalise(points).map(([x, y]) => [x, -y]);
+
+  // Build adjacency list
+  const adj: number[][] = Array.from({ length: nVtx }, () => []);
+  for (const [i, j] of edges) { adj[i].push(j); adj[j].push(i); }
+
+  // Skeleton diameter (normalized) — used for expectedSpan check
+  let maxAxisDist = -1;
+  for (let a = 0; a < normPts.length; a++) {
+    for (let b = a + 1; b < normPts.length; b++) {
+      const dx = normPts[b][0] - normPts[a][0], dy = normPts[b][1] - normPts[a][1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxAxisDist) maxAxisDist = d;
+    }
+  }
+  if (maxAxisDist < 0.01) return null;
+
+  const CANDIDATE_CAP = 2000;
+  const SECOND_STAR_RADIUS = 15; // degrees
+
+  const phase1Top: PhaseCandidate[] = [];
+  let prescreenMin = -1;
+
+  const seeds = catalogue.filter(s => !excludeSeeds.has(s.id) && s.mag <= cfg.seedMaxMag);
+
+  for (const starS of seeds) {
+    for (let vi = 0; vi < nVtx; vi++) {
+      if (adj[vi].length === 0) continue;
+
+      // Find S's nearest star within SECOND_STAR_RADIUS (shared across all skeleton neighbours of V)
+      const nearbyStars = grid.inRadius(starS.ra, starS.dec, SECOND_STAR_RADIUS)
+        .filter(s => s.id !== starS.id)
+        .sort((a, b) =>
+          distanceDeg(starS.ra, starS.dec, a.ra, a.dec) - distanceDeg(starS.ra, starS.dec, b.ra, b.dec),
+        );
+      if (nearbyStars.length === 0) continue;
+      const starT = nearbyStars[0];
+
+      const skyDX = starT.ra - starS.ra;
+      const skyDY = starT.dec - starS.dec;
+      const skyLen = Math.sqrt(skyDX * skyDX + skyDY * skyDY);
+      if (skyLen === 0) continue;
+
+      // Loop over all skeleton neighbours of V (not just the nearest)
+      for (const u of adj[vi]) {
+        const skelDX = normPts[u][0] - normPts[vi][0];
+        const skelDY = normPts[u][1] - normPts[vi][1];
+        const skelLen = Math.sqrt(skelDX * skelDX + skelDY * skelDY);
+        if (skelLen < 0.01) continue;
+
+        const physScale = skyLen / skelLen;
+        const expectedSpan = physScale * maxAxisDist;
+        if (expectedSpan < 2 || expectedSpan > cfg.maxSpanDeg) continue;
+
+        // Align skeleton direction V→U to sky direction S→T
+        const cosR = (skelDX * skyDX + skelDY * skyDY) / (skelLen * skyLen);
+        const sinR = (skelDX * skyDY - skelDY * skyDX) / (skelLen * skyLen);
+
+        // Place vertex vi at starS, rotate and scale the rest
+        const physVerts: [number, number][] = normPts.map(([nx, ny]) => {
+          const dx = nx - normPts[vi][0];
+          const dy = ny - normPts[vi][1];
+          return [
+            starS.ra + (dx * cosR - dy * sinR) * physScale,
+            starS.dec + (dx * sinR + dy * cosR) * physScale,
+          ];
+        });
+
+        let covered = 0;
+        for (let k = 0; k < nVtx; k++) {
+          if (grid.hasStarNear(physVerts[k][0], physVerts[k][1])) covered++;
+        }
+        const score = covered / nVtx;
+
+        if (score > prescreenMin) {
+          phase1Top.push({ score, seed: starS, physVerts });
+          if (phase1Top.length >= CANDIDATE_CAP * 2) {
+            phase1Top.sort((a, b) => b.score - a.score);
+            phase1Top.length = CANDIDATE_CAP;
+            prescreenMin = phase1Top[phase1Top.length - 1].score;
+          } else if (phase1Top.length === 1) {
+            prescreenMin = 0;
+          }
+        }
+      }
+    }
+  }
+
+  if (phase1Top.length === 0) return null;
+  phase1Top.sort((a, b) => b.score - a.score);
+  return runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -964,11 +1165,15 @@ export function match(
   let globalBest: (ScoreResult & { seed: Star; variantIndex: number }) | null = null;
 
   const tMatch = performance.now();
-  log.info({ catalogueSize: catalogue.length, skeletons: skeletons.length }, 'pairwise search start');
+  log.info({ catalogueSize: catalogue.length, skeletons: skeletons.length, generator: cfg.generator, scorer: cfg.scorer }, 'search start');
+
+  const searchFn = cfg.generator === 'single-sweep' ? singleSweepSearch
+    : cfg.generator === 'any-vertex' ? anyVertexSearch
+    : pairwiseAnchorSearch;
 
   for (let i = 0; i < skeletons.length; i++) {
     try {
-      const result = pairwiseAnchorSearch(skeletons[i], catalogue, excludeSeeds, cfg, grid);
+      const result = searchFn(skeletons[i], catalogue, excludeSeeds, cfg, grid);
       if (!result) { log.debug({ index: i }, 'skeleton returned null'); continue; }
       if (!globalBest || result.score > globalBest.score) {
         globalBest = { ...result, variantIndex: i };
@@ -982,19 +1187,34 @@ export function match(
 
   if (!globalBest || globalBest.constellationStars.length === 0) return null;
 
+  const actualSpan = maxPairwiseAngularDist(globalBest.constellationStars);
+  if (actualSpan > cfg.maxSpanDeg) {
+    log.warn({ actualSpan: actualSpan.toFixed(1), maxSpanDeg: cfg.maxSpanDeg }, 'span exceeds maxSpanDeg — rejecting match');
+    return null;
+  }
+
   excludeSeeds.add(globalBest.seed.id);
 
-  log.info({ variantIndex: globalBest.variantIndex, shapeScore: (globalBest.score * 100).toFixed(1) }, 'variant won');
+  log.info({ variantIndex: globalBest.variantIndex, shapeScore: (globalBest.shapeScore * 100).toFixed(1), vertexFitScore: (globalBest.vertexFitScore * 100).toFixed(1) }, 'variant won');
 
-  const span = maxPairwiseAngularDist(globalBest.constellationStars);
-  log.debug({ spanDeg: span.toFixed(1), orionPct: Math.round((span / ORION_SPAN_DEG) * 100) }, 'pattern size');
+  log.debug({ spanDeg: actualSpan.toFixed(1), orionPct: Math.round((actualSpan / ORION_SPAN_DEG) * 100) }, 'pattern size');
+
+  const physRaDec = globalBest.skeletonRaDec;
+  const patchRA = physRaDec.reduce((s, v) => s + v.ra, 0) / physRaDec.length;
+  const patchDec = physRaDec.reduce((s, v) => s + v.dec, 0) / physRaDec.length;
 
   return {
     stars: globalBest.stars,
     constellationStars: globalBest.constellationStars,
     edges: skeletons[globalBest.variantIndex].edges,
-    patchRA: globalBest.seed.ra,
-    patchDec: globalBest.seed.dec,
+    patchRA,
+    patchDec,
+    shapeScore: globalBest.shapeScore,
+    vertexFitScore: globalBest.vertexFitScore,
+    procrustesScore: globalBest.procrustesScore,
+    phase1Candidates: globalBest.phase1Candidates,
+    phase2Candidates: globalBest.phase2Candidates,
+    phase3Candidates: globalBest.phase3Candidates,
     skeletonPoints: globalBest.skeletonRaDec,
     variantIndex: globalBest.variantIndex,
   };

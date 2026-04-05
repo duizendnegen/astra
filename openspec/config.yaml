@@ -1,19 +1,17 @@
 schema: spec-driven
 
-Project context (optional)
-This is shown to AI when creating artifacts.
-Add your tech stack, conventions, style guides, domain knowledge, etc.
-Example:
-  context: |
-    We use Docker Compose to run the application.
-    After each relevant change, add tests and run the test harness.
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+context: |
+  We use Docker Compose to run the application. It needs to be explicitly restarted after every change.
+  After each relevant change, add tests and run the test harness.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
+rules:
+  proposal:
+    - Add visual testing and a test harness run after each relevant change as part of tasks.
 #     tasks:
 #       - Break tasks into chunks of max 2 hours
