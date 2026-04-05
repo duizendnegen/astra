@@ -13,7 +13,10 @@ import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { TRIANGLE_FALLBACK, type Skeleton } from './core.js';
 import { svgToSkeleton, rdpSimplify, visvalingamWhyatt, type SimplifyFn } from './svg-to-skeleton.js';
+import { createLogger } from './logger.js';
 import path from 'path';
+
+const log = createLogger('retrieval');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -111,19 +114,19 @@ async function embedBatch(texts: string[], apiKey: string): Promise<(Float32Arra
       body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
     });
     if (!res.ok) {
-      console.log(`[retrieval] embed HTTP ${res.status}`);
+      log.warn({ status: res.status }, 'embed HTTP error');
       return texts.map(() => null);
     }
     const data = (await res.json()) as { data?: { embedding: number[]; index: number }[] };
-    const elapsed = Date.now() - t0;
-    console.log(`[retrieval] embed ${texts.length} texts in ${elapsed}ms`);
+    const durationMs = Date.now() - t0;
+    log.debug({ count: texts.length, durationMs }, 'embed complete');
     const ordered = new Array<Float32Array | null>(texts.length).fill(null);
     for (const item of data.data ?? []) {
       ordered[item.index] = new Float32Array(item.embedding);
     }
     return ordered;
   } catch (err) {
-    console.log(`[retrieval] embed error: ${err}`);
+    log.error({ err }, 'embed error');
     return texts.map(() => null);
   }
 }
@@ -173,7 +176,8 @@ function searchIndex(db: Database.Database, queryVec: Float32Array, topK = 5): S
   // Sort by cosine distance ascending, take topK
   rows.sort((a, b) => a.dist - b.dist);
   const top = rows.slice(0, topK);
-  console.log(`[retrieval] index search ${rows.length} rows in ${Date.now()-t0}ms, top sim: ${top[0] ? (1 - top[0].dist*top[0].dist/2).toFixed(3) : 'none'}`);
+  const durationMs = Date.now() - t0;
+  log.debug({ rows: rows.length, durationMs, topSim: top[0] ? (1 - top[0].dist*top[0].dist/2).toFixed(3) : 'none' }, 'L1 index search');
 
   return top.map((r) => ({
     entry: { id: r.id, source: r.source, label: r.label, tags: r.tags, svg_path: r.svg_path },
@@ -302,7 +306,7 @@ export async function retrieveSkeleton(
 
   // L0: normalise
   const normalised = normalise(word);
-  console.log(`[retrieval] "${word}" → normalised: "${normalised}"`);
+  log.debug({ word, normalised }, 'L0 normalised');
 
   // Track the best index result seen across L1 and L3 (for best-cosine fallback)
   let bestSeen: SearchResult | null = null;
@@ -319,10 +323,10 @@ export async function retrieveSkeleton(
     trackBest(results);
     const best = bestAboveThreshold(results);
     if (best) {
-      console.log(`[retrieval] L1 hit: ${best.entry.id} (${best.similarity.toFixed(3)}) ${elapsed()}`);
+      log.info({ id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
       const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
       if (skeleton) {
-        console.log(`[retrieval] L1 skeleton ok ${elapsed()}`);
+        log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
         return {
           match: {
             source: best.entry.source as 'phosphor' | 'phylopic',
@@ -334,19 +338,19 @@ export async function retrieveSkeleton(
           skeletons: [skeleton],
         };
       }
-      console.log(`[retrieval] L1 skeleton null (svg len ${best.entry.svg_path.length}) ${elapsed()}`);
+      log.warn({ svgLen: best.entry.svg_path.length, durationMs: Date.now() - t0 }, 'L1 skeleton null');
     } else {
-      console.log(`[retrieval] L1 miss (best: ${results[0]?.similarity.toFixed(3) ?? 'none'}) ${elapsed()}`);
+      log.info({ bestSim: results[0]?.similarity.toFixed(3) ?? 'none', durationMs: Date.now() - t0 }, 'L1 miss');
     }
   }
 
   // L3: LLM concept mapping — batch embed all candidates in one call
   const candidates = await l3Candidates(normalised, apiKey);
-  console.log(`[retrieval] L3 candidates: ${candidates.join(', ')} ${elapsed()}`);
+  log.debug({ candidates, durationMs: Date.now() - t0 }, 'L3 candidates');
 
   if (candidates.length > 0) {
     const vecs = await embedBatch(candidates, apiKey);
-    console.log(`[retrieval] L3 batch embed done ${elapsed()}`);
+    log.debug({ durationMs: Date.now() - t0 }, 'L3 batch embed done');
     for (let i = 0; i < candidates.length; i++) {
       const vec = vecs[i];
       if (!vec) continue;
@@ -354,7 +358,7 @@ export async function retrieveSkeleton(
       trackBest(results);
       const best = bestAboveThreshold(results);
       if (best) {
-        console.log(`[retrieval] L3 hit via "${candidates[i]}": ${best.entry.id} (${best.similarity.toFixed(3)}) ${elapsed()}`);
+        log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
         const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
         if (skeleton) {
           return {
@@ -368,16 +372,16 @@ export async function retrieveSkeleton(
             skeletons: [skeleton],
           };
         }
-        console.log(`[retrieval] L3 skeleton null for "${candidates[i]}" ${elapsed()}`);
+        log.warn({ via: candidates[i], durationMs: Date.now() - t0 }, 'L3 skeleton null');
       }
     }
   }
-  console.log(`[retrieval] L3 miss ${elapsed()}`);
+  log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
 
   // L4: LLM SVG generation
   const svg = await l4GenerateSvg(normalised, apiKey);
   if (svg) {
-    console.log(`[retrieval] L4 SVG generated (${svg.length} chars) ${elapsed()}`);
+    log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 SVG generated');
     const skeleton = svgToSkeletonWithOpts(svg);
     if (skeleton) {
       return {
@@ -391,13 +395,13 @@ export async function retrieveSkeleton(
         skeletons: [skeleton],
       };
     }
-    console.log(`[retrieval] L4 skeleton null ${elapsed()}`);
+    log.warn({ durationMs: Date.now() - t0 }, 'L4 skeleton null');
   }
 
   // Fallback: use best cosine result seen, or triangle if nothing was found
   if (bestSeen) {
     const b = bestSeen as SearchResult;
-    console.log(`[retrieval] using best-cosine fallback: ${b.entry.id} (${b.similarity.toFixed(3)}) ${elapsed()}`);
+    log.info({ id: b.entry.id, similarity: b.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'best-cosine fallback');
     const skeleton = svgToSkeletonWithOpts(b.entry.svg_path);
     if (skeleton) {
       return {
@@ -412,6 +416,6 @@ export async function retrieveSkeleton(
       };
     }
   }
-  console.log(`[retrieval] all layers failed — returning triangle fallback ${elapsed()}`);
+  log.warn({ durationMs: Date.now() - t0 }, 'All layers failed — returning triangle fallback');
   return { match: null, skeletons: [TRIANGLE_FALLBACK] };
 }

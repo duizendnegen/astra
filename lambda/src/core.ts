@@ -6,6 +6,9 @@ export interface Skeleton {
 // Re-export retrieveSkeleton as the primary skeleton generation path.
 // generateSkeleton is kept below for reference and experiment runs.
 export { retrieveSkeleton, type PipelineResult, type MatchProvenance } from './retrieval.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('core');
 
 export const TRIANGLE_FALLBACK: Skeleton = {
   points: [[0.5, 0], [0, 1], [1, 1]],
@@ -108,14 +111,14 @@ async function llmJson(prompt: string, apiKey: string, model: string = MODEL): P
   });
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    console.log(`[core] llmJson HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    log.warn({ status: response.status, body: errText.slice(0, 200) }, 'llmJson HTTP error');
     return null;
   }
   const data = await response.json() as { choices?: { message?: { content?: string } }[]; error?: unknown };
-  if (data.error) console.log(`[core] llmJson API error:`, JSON.stringify(data.error)?.slice(0, 200));
+  if (data.error) log.warn({ error: JSON.stringify(data.error)?.slice(0, 200) }, 'llmJson API error');
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
-    console.log(`[core] llmJson no content, data:`, JSON.stringify(data)?.slice(0, 300));
+    log.warn({ data: JSON.stringify(data)?.slice(0, 300) }, 'llmJson no content');
     return null;
   }
   // Strip markdown code fences and JS-style comments that some LLMs inject into JSON output
@@ -123,7 +126,7 @@ async function llmJson(prompt: string, apiKey: string, model: string = MODEL): P
     .replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '')
     .replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   try { return JSON.parse(stripped); } catch (e) {
-    console.log(`[core] llmJson JSON parse failed: ${content.slice(0, 200)}`);
+    log.warn({ content: content.slice(0, 200) }, 'llmJson JSON parse failed');
     return null;
   }
 }
@@ -156,7 +159,7 @@ export function isValidSkeleton(obj: unknown): obj is Skeleton {
 
 async function getDescriptions(word: string, apiKey: string, promptFn: (w: string) => string = DESCRIBE_MULTI_PROMPT, model: string = MODEL, max: number = 3): Promise<string[]> {
   const raw = await llmJson(promptFn(word), apiKey, model);
-  console.log(`[core] getDescriptions "${word}" raw:`, JSON.stringify(raw)?.slice(0, 200));
+  log.debug({ word, raw: JSON.stringify(raw)?.slice(0, 200) }, 'getDescriptions raw');
   if (
     typeof raw === 'object' &&
     raw !== null &&
@@ -173,10 +176,10 @@ async function getDescriptions(word: string, apiKey: string, promptFn: (w: strin
 async function generateVariants(word: string, apiKey: string, model: string = MODEL): Promise<Skeleton[]> {
   const descriptions = await getDescriptions(word, apiKey, DESCRIBE_MULTI_PROMPT, model, 3);
   if (descriptions.length === 0) {
-    console.log(`[core] no descriptions for "${word}"`);
+    log.warn({ word }, 'no descriptions');
     return [];
   }
-  console.log(`[core] "${word}" descriptions:`, descriptions.map((d, i) => `${i}: ${d.slice(0, 60)}...`));
+  log.debug({ word, descriptions: descriptions.map((d, i) => `${i}: ${d.slice(0, 60)}...`) }, 'descriptions');
 
   const results = await Promise.all(
     descriptions.map((desc) => llmJson(DRAW_PROMPT(desc), apiKey, model)),
@@ -186,9 +189,9 @@ async function generateVariants(word: string, apiKey: string, model: string = MO
     const s = normaliseSkeleton(r);
     if (!s) {
       const pts = (r as Record<string, unknown>)?.points;
-      console.log(`[core] "${word}" skel${i} INVALID: pts=${Array.isArray(pts) ? pts.length : 'none'} raw=${JSON.stringify(r)?.slice(0, 120)}`);
+      log.warn({ word, index: i, pts: Array.isArray(pts) ? pts.length : 'none', raw: JSON.stringify(r)?.slice(0, 120) }, 'skeleton INVALID');
     } else {
-      console.log(`[core] "${word}" skel${i} OK: ${s.points.length} pts, ${s.edges.length} edges`);
+      log.debug({ word, index: i, points: s.points.length, edges: s.edges.length }, 'skeleton OK');
     }
     return s;
   });

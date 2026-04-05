@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { match, maxPairwiseAngularDist } from '../frontend/src/matcher.ts';
-import type { MatcherConfig, ModelName } from '../frontend/src/matcher.ts';
-import type { Star, Skeleton, MatchResult } from '../frontend/src/types.ts';
+import { match, maxPairwiseAngularDist } from '../lambda/src/matcher.ts';
+import type { MatcherConfig, ModelName } from '../lambda/src/matcher.ts';
+import type { Star, Skeleton, MatchResult } from '../lambda/src/types.ts';
 import { words, wordCategoryMap } from './words.ts';
 import { renderPatch, renderComposite } from './render-patch.ts';
 

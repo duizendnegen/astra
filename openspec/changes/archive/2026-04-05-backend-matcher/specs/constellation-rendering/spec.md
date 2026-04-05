@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Constellation edges drawn between matched stars
 The system SHALL draw constellation lines between `constellationStars` pairs as defined by the
@@ -23,6 +23,8 @@ reduced opacity. This SHALL be the default rendering behaviour with no query par
 - **WHEN** the URL contains `?render_mode=skeleton`
 - **THEN** constellation lines are drawn between ideal skeleton positions (the pre-change behaviour)
 
+## ADDED Requirements
+
 ### Requirement: Skeleton overlay rendered from API-provided skeleton field
 When the API response includes a `skeleton` field, the frontend MAY render it as an overlay using
 the normalised coordinates provided. The `skeleton.points` array SHALL be projected into screen
@@ -36,25 +38,3 @@ opt-in (e.g. gated by a query parameter or feature flag) and SHALL NOT appear by
 #### Scenario: No overlay when skeleton field absent
 - **WHEN** the API response does not include a `skeleton` field
 - **THEN** no skeleton overlay is rendered and no error is thrown
-
-### Requirement: Matched stars brightened
-The system SHALL render `constellationStars` fully bright and at increased size. Stars in
-`MatchResult.stars` that are not in `constellationStars` SHALL be rendered slightly brighter than
-ordinary background stars but dimmer than constellation stars, forming a visible on-pattern context
-layer.
-
-#### Scenario: Three-tier star brightness
-- **WHEN** the constellation is rendered
-- **THEN** `constellationStars` are the brightest, on-pattern context stars (`stars` minus `constellationStars`) are intermediate, and background stars are the dimmest
-
-#### Scenario: On-pattern context layer visible
-- **WHEN** the constellation region is shown
-- **THEN** stars near skeleton edges but not in `constellationStars` are visibly brighter than the general background field
-
-### Requirement: Background stars dimmed by distance from constellation centre
-The system SHALL reduce the opacity of background stars based on their angular distance from the
-constellation patch centre, creating a "portrait with context" framing.
-
-#### Scenario: Stars near centre brighter
-- **WHEN** the constellation is rendered
-- **THEN** stars closer to the patch centre are rendered at higher opacity than stars further away

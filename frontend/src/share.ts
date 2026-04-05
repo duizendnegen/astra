@@ -1,5 +1,4 @@
 import type { ConstellationState, Star } from './types';
-import { getCatalogue } from './catalogue';
 
 interface Encoded {
   word: string;
@@ -29,12 +28,12 @@ export function encode(state: ConstellationState): string {
   return btoa(JSON.stringify(payload));
 }
 
-export function decode(param: string, catalogue?: Star[]): ConstellationState | null {
+export function decode(param: string, catalogue: Star[]): ConstellationState | null {
   try {
     const payload = JSON.parse(atob(param)) as Encoded;
     if (!Array.isArray(payload.cids)) return null;
 
-    const cat = catalogue ?? getCatalogue();
+    const cat = catalogue;
     const idMap = new Map(cat.map((s) => [s.id, s]));
 
     const stars = payload.ids.map((id) => idMap.get(id)).filter(Boolean) as Star[];

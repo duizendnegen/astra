@@ -1,4 +1,7 @@
 import type { Star, Skeleton, MatchResult } from './types';
+import { createLogger } from './logger.js';
+
+const log = createLogger('matcher');
 
 // ── Public config types ───────────────────────────────────────────────────
 
@@ -789,7 +792,7 @@ function pairwiseAnchorSearch(
   // mag ≤ 5 covers all naked-eye stars (~5000 total); refine later if needed.
   const SECONDARY_MAG = 5.0;
   const t0 = performance.now();
-  console.log(`[matcher] pairwise: nVtx=${nVtx}, capped=${capped}, anchors=${anchors.length}, axisU=${axisU}, axisV=${axisV}, maxAxisDist=${maxAxisDist.toFixed(3)}`);
+  log.debug({ nVtx, capped, anchors: anchors.length, axisU, axisV, maxAxisDist: maxAxisDist.toFixed(3) }, 'pairwise start');
 
   // Single reusable buffer — allocated once, mutated per iteration (zero alloc in hot path)
   const buf: [number, number][] = normPts.map(() => [0, 0] as [number, number]);
@@ -853,10 +856,11 @@ function pairwiseAnchorSearch(
     }
   }
 
-  console.log(`[matcher] prescreen done: ${prescreenTop.length} candidates in ${(performance.now()-t0).toFixed(0)}ms, prescreenMin=${prescreenMin.toFixed(2)}`);
-  if (prescreenTop.length === 0) { console.log('[matcher] prescreenTop empty → null'); return null; }
+  const tPrescreen = performance.now() - t0;
+  log.debug({ candidates: prescreenTop.length, durationMs: tPrescreen.toFixed(0), prescreenMin: prescreenMin.toFixed(2) }, 'prescreen done');
+  if (prescreenTop.length === 0) { log.debug('prescreenTop empty → null'); return null; }
   prescreenTop.sort((a, b) => b.score - a.score);
-  console.log(`[matcher] prescreen top score=${prescreenTop[0].score.toFixed(2)}, anchor=${prescreenTop[0].anchorStar.id}`);
+  log.debug({ topScore: prescreenTop[0].score.toFixed(2), anchor: prescreenTop[0].anchorStar.id }, 'prescreen top');
 
   // Phase 2: greedy NN assignment → edge-length ratio score
   const greedyTop: { score: number; anchorStar: Star; physVerts: [number, number][] }[] = [];
@@ -886,7 +890,8 @@ function pairwiseAnchorSearch(
     greedyTop.push({ score, anchorStar, physVerts });
   }
   greedyTop.sort((a, b) => b.score - a.score);
-  console.log(`[matcher] greedy done: ${greedyTop.length} candidates, top score=${greedyTop[0]?.score.toFixed(3) ?? 'n/a'}`);
+  const tGreedy = performance.now() - t0 - tPrescreen;
+  log.debug({ candidates: greedyTop.length, durationMs: tGreedy.toFixed(0), topScore: greedyTop[0]?.score.toFixed(3) ?? 'n/a' }, 'greedy done');
 
   // Phase 3: Hungarian refinement on top candidates
   let bestResult: (ScoreResult & { seed: Star }) | null = null;
@@ -937,6 +942,9 @@ function pairwiseAnchorSearch(
     }
   }
 
+  const tHungarian = performance.now() - t0 - tPrescreen - tGreedy;
+  log.debug({ durationMs: tHungarian.toFixed(0), bestScore: bestResult?.score.toFixed(3) ?? 'none' }, 'hungarian done');
+
   return bestResult;
 }
 
@@ -956,33 +964,30 @@ export function match(
   let globalBest: (ScoreResult & { seed: Star; variantIndex: number }) | null = null;
 
   const tMatch = performance.now();
-  console.log(`[matcher] starting pairwise search, catalogue size=${catalogue.length}, skeletons=${skeletons.length}`);
+  log.info({ catalogueSize: catalogue.length, skeletons: skeletons.length }, 'pairwise search start');
 
   for (let i = 0; i < skeletons.length; i++) {
     try {
       const result = pairwiseAnchorSearch(skeletons[i], catalogue, excludeSeeds, cfg, grid);
-      if (!result) { console.log(`[matcher] skeleton ${i} returned null`); continue; }
+      if (!result) { log.debug({ index: i }, 'skeleton returned null'); continue; }
       if (!globalBest || result.score > globalBest.score) {
         globalBest = { ...result, variantIndex: i };
       }
     } catch (e) {
-      console.error(`[matcher] error in skeleton ${i}:`, e);
+      log.error({ index: i, err: e }, 'error in skeleton');
     }
   }
-  console.log(`[matcher] search done in ${(performance.now()-tMatch).toFixed(0)}ms`);
+  const durationMs = (performance.now() - tMatch).toFixed(0);
+  log.info({ durationMs }, 'search done');
 
   if (!globalBest || globalBest.constellationStars.length === 0) return null;
 
   excludeSeeds.add(globalBest.seed.id);
 
-  console.log(
-    `[matcher] variant ${globalBest.variantIndex} won with ${(globalBest.score * 100).toFixed(1)}% shape score`,
-  );
+  log.info({ variantIndex: globalBest.variantIndex, shapeScore: (globalBest.score * 100).toFixed(1) }, 'variant won');
 
   const span = maxPairwiseAngularDist(globalBest.constellationStars);
-  console.log(
-    `[matcher] pattern size: ${span.toFixed(1)}° (${Math.round((span / ORION_SPAN_DEG) * 100)}% of Orion)`,
-  );
+  log.debug({ spanDeg: span.toFixed(1), orionPct: Math.round((span / ORION_SPAN_DEG) * 100) }, 'pattern size');
 
   return {
     stars: globalBest.stars,

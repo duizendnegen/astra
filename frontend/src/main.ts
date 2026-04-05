@@ -1,12 +1,11 @@
-import { loadCatalogue, getCatalogue, loadConstellationLines } from './catalogue';
+import { loadCatalogue, loadConstellationLines } from './catalogue';
 import { init, resize, setConstellation, animateToResult, animateToLanding, setOverlayData } from './renderer';
-import { match } from './matcher';
 import { buildShareUrl, copyToClipboard, decode } from './share';
 import { exportPng } from './export';
 import { formatDec, formatRA } from './coords';
 import { getFeatures } from './features';
 import { NAMED_STARS } from './named-stars';
-import type { ConstellationState } from './types';
+import type { ConstellationState, MatchResult } from './types';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const canvas          = document.getElementById('sky') as HTMLCanvasElement;
@@ -62,19 +61,17 @@ function setLoading(loading: boolean): void {
 async function findConstellation(word: string): Promise<void> {
   setLoading(true);
   try {
-    const res = await fetch('/api/skeleton', {
+    const res = await fetch('/api/constellation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word }),
+      body: JSON.stringify({ word, excludeSeeds: Array.from(usedPatches) }),
     });
     if (!res.ok) throw new Error(`API error: ${res.status}`);
-    const { skeletons } = await res.json() as { skeletons: import('./types').Skeleton[] };
+    const { constellation, seedStarId } = await res.json() as { constellation: MatchResult; seedStarId?: number };
+    if (!constellation) throw new Error('No patch found — try again');
 
-    const catalogue = getCatalogue();
-    const matchResult = match(catalogue, skeletons, usedPatches);
-    if (!matchResult) throw new Error('No patch found — try again');
-
-    currentState = { word, match: matchResult };
+    if (seedStarId != null) usedPatches.add(seedStarId);
+    currentState = { word, match: constellation };
     showResult(currentState);
   } catch (err) {
     catalogueStatus.textContent = err instanceof Error ? err.message : 'Something went wrong';
@@ -133,7 +130,7 @@ async function boot(): Promise<void> {
   findBtn.disabled = false;
 
   if (encoded) {
-    const state = decode(encoded);
+    const state = decode(encoded, catalogue);
     if (state) {
       currentState = state;
       showResult(state);
