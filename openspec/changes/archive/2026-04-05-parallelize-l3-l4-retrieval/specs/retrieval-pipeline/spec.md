@@ -1,15 +1,4 @@
-## ADDED Requirements
-
-### Requirement: L0 normalisation
-Before querying the index the system SHALL normalise the input word: convert to lowercase, strip punctuation, and lemmatise using `compromise.js` ("running" → "run", "towers" → "tower"). The normalised form is used for all subsequent layers.
-
-#### Scenario: Lemmatisation applied
-- **WHEN** the input word is "running"
-- **THEN** the normalised form used for embedding is "run"
-
-#### Scenario: Punctuation stripped
-- **WHEN** the input word contains punctuation (e.g. "cat!")
-- **THEN** the normalised form has punctuation removed ("cat")
+## MODIFIED Requirements
 
 ### Requirement: L1 direct embedding match
 The system SHALL embed the normalised word via OpenRouter `text-embedding-3-small` and query the SQLite `vec0` index using a KNN `MATCH` query for the nearest entries by cosine distance. The system SHALL post-filter results to `source = 'phosphor'` entries in application code. If the top Phosphor result's similarity exceeds `THRESHOLD_PHOSPHOR`, the match SHALL be accepted and L3/L4 SHALL be skipped.
@@ -73,13 +62,8 @@ The L4 model SHALL be configurable via the `L4_MODEL` environment variable (defa
 - **WHEN** L4 LLM returns an unparseable or empty SVG
 - **THEN** the pipeline returns TRIANGLE_FALLBACK
 
-### Requirement: Match provenance recorded
-The system SHALL record which layer produced the match (`1`, `3`, or `4`), the matched entry id and source, the cosine similarity score, and the svg_path used. This provenance SHALL be stored in the DynamoDB cache entry and returned as part of the internal pipeline result for logging.
+## REMOVED Requirements
 
-#### Scenario: Provenance available after L1 match
-- **WHEN** L1 produces an accepted match
-- **THEN** the cache entry contains `match.layer = 1`, `match.source`, `match.id`, `match.similarity`, and `match.svgPath`
-
-#### Scenario: Provenance available after L3 match
-- **WHEN** L3 produces an accepted match
-- **THEN** the cache entry contains `match.layer = 3` and the corresponding fields
+### Requirement: L4 prompt includes few-shot examples
+**Reason**: Replaced by a simpler, unambiguous prompt. Few-shot examples added latency and contained a contradiction (stroke-only instruction with filled-path examples). The skeleton pipeline handles multi-path SVGs cleanly.
+**Migration**: No migration needed — prompt is internal to the retrieval pipeline.

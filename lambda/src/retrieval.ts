@@ -25,6 +25,7 @@ export const THRESHOLD_PHYLOPIC = parseFloat(process.env.THRESHOLD_PHYLOPIC ?? '
 
 const EMBED_MODEL = 'openai/text-embedding-3-small';
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+const L4_MODEL = process.env.L4_MODEL ?? 'google/gemini-2.5-flash';
 
 // Disk cache for L5 sub-steps during local development.
 // Resolves relative to the working directory (expected: lambda/ when running dev:local).
@@ -157,6 +158,13 @@ function getSearchStmt(db: Database.Database) {
     // poor skeletons with the current L5 extractor (designed for stroke-based icons).
     // Re-enable Phylopic once L5 handles filled paths (stroke extraction / contour tracing).
     // vec_distance_cosine() returns L2 distance; sort ascending in JS and convert to similarity.
+    //
+    // Note: vec0 ANN (MATCH) was investigated but the single shared index (phosphor ~1512 +
+    // phylopic ~5000) causes corpus-mixing — top-k from the full index is dominated by phylopic
+    // entries, so the best phosphor match often falls outside top-20 (even top-200). A separate
+    // phosphor_vectors table would solve this but requires a schema migration. Full-scan is
+    // acceptable here: L1 is only on the critical path for hits, and L3/L4 now run in parallel
+    // so the miss-path latency is no longer dominated by L1. See l1-ann-investigation.md.
     _searchStmt = db.prepare(`
       SELECT v.id, vec_distance_cosine(v.embedding, vec_f32(:buf)) AS dist,
              e.source, e.label, e.tags, e.svg_path
@@ -177,7 +185,7 @@ function searchIndex(db: Database.Database, queryVec: Float32Array, topK = 5): S
   rows.sort((a, b) => a.dist - b.dist);
   const top = rows.slice(0, topK);
   const durationMs = Date.now() - t0;
-  log.debug({ rows: rows.length, durationMs, topSim: top[0] ? (1 - top[0].dist*top[0].dist/2).toFixed(3) : 'none' }, 'L1 index search');
+  log.debug({ rows: rows.length, durationMs, topSim: top[0] ? (1 - top[0].dist * top[0].dist / 2).toFixed(3) : 'none' }, 'L1 index search');
 
   return top.map((r) => ({
     entry: { id: r.id, source: r.source, label: r.label, tags: r.tags, svg_path: r.svg_path },
@@ -200,13 +208,9 @@ function bestAboveThreshold(results: SearchResult[]): SearchResult | null {
 // ── L3 — LLM concept mapping ──────────────────────────────────────────────────
 
 const L3_PROMPT = (word: string) =>
-  `Give 5 synonyms and visual representations of "${word}".
-Translate to English first if the word is not English.
-Think about what simple object or animal best represents "${word}" as a symbolic silhouette.
-Return single nouns only as a JSON array of strings. Example: ["dog","wolf","fox","hound","canine"]
-MUST respond with ONLY a JSON array, no explanation.`;
+  `List 5 single nouns that visually represent "${word}" — synonyms, categories, or iconic objects.\nReturn ONLY a JSON array of strings, e.g. ["cat","tiger","paw","whisker","feline"]. No explanation.`;
 
-async function l3Candidates(word: string, apiKey: string): Promise<string[]> {
+async function l3Candidates(word: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
   try {
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: 'POST',
@@ -214,8 +218,8 @@ async function l3Candidates(word: string, apiKey: string): Promise<string[]> {
       body: JSON.stringify({
         model: process.env.SKELETON_MODEL ?? 'anthropic/claude-haiku-4.5',
         messages: [{ role: 'user', content: L3_PROMPT(word) }],
-        response_format: { type: 'json_object' },
       }),
+      signal,
     });
     if (!res.ok) return [];
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
@@ -234,42 +238,34 @@ async function l3Candidates(word: string, apiKey: string): Promise<string[]> {
 
 // ── L4 — LLM SVG generation ───────────────────────────────────────────────────
 
-// Few-shot examples from Phosphor icons to ground the abstraction level
-const FEW_SHOT = `Examples of good simple SVGs:
-Heart: <svg viewBox="0 0 256 256"><path d="M128,220a12,12,0,0,1-8.49-3.52l-86-86a60,60,0,0,1,84.87-84.87L128,55.48l9.63-9.62a60,60,0,0,1,84.87,84.87l-86,86A12,12,0,0,1,128,220Z"/></svg>
-Star: <svg viewBox="0 0 256 256"><path d="M234.5,114.38l-45.1,39.36,13.51,58.6a16,16,0,0,1-23.84,17.34l-51.11-31-51,31a16,16,0,0,1-23.84-17.34L66.61,153.8,21.5,114.38a16,16,0,0,1,9.11-28.06l58.83-5.91,23-55.47a15.92,15.92,0,0,1,29.12,0l23,55.47,58.83,5.91a16,16,0,0,1,9.11,28.06Z"/></svg>`;
-
 const L4_PROMPT = (word: string) =>
-  `Generate a simple SVG silhouette for the word "${word}".
+  `Draw "${word} as an SVG". No colours.\nReturn ONLY the complete <svg>...</svg> element. No explanation, no markdown.`;
 
-Rules:
-- Use a single <path> element with stroke only, no fill
-- viewBox should be "0 0 256 256"
-- Draw the most iconic, universally recognisable form of "${word}"
-- Clean outline, no interior lines, no decoration
-- Aim for the complexity of an emoji or street sign
-
-${FEW_SHOT}
-
-MUST respond with ONLY a complete <svg>...</svg> string, no explanation.`;
-
-async function l4GenerateSvg(word: string, apiKey: string): Promise<string | null> {
+async function l4GenerateSvg(word: string, apiKey: string, signal?: AbortSignal): Promise<string | null> {
   try {
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: process.env.SKELETON_MODEL ?? 'anthropic/claude-haiku-4.5',
+        model: L4_MODEL,
         messages: [{ role: 'user', content: L4_PROMPT(word) }],
       }),
+      signal,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      log.warn({ status: res.status, model: L4_MODEL, body: body.slice(0, 200) }, 'L4 HTTP error');
+      return null;
+    }
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = data.choices?.[0]?.message?.content ?? '';
     // Extract SVG block
     const m = content.match(/<svg[\s\S]*?<\/svg>/i);
     return m?.[0] ?? null;
-  } catch {
+  } catch (err) {
+    if ((err as { name?: string }).name !== 'AbortError') {
+      log.warn({ err }, 'L4 fetch error');
+    }
     return null;
   }
 }
@@ -344,58 +340,86 @@ export async function retrieveSkeleton(
     }
   }
 
-  // L3: LLM concept mapping — batch embed all candidates in one call
-  const candidates = await l3Candidates(normalised, apiKey);
-  log.debug({ candidates, durationMs: Date.now() - t0 }, 'L3 candidates');
+  // L3 + L4: parallel race with dual-flag cancellation
+  let l4Done = false;
+  let timerFired = false;
+  let l4Result: PipelineResult | null = null;
+  const l3Controller = new AbortController();
+  const l4Controller = new AbortController();
 
-  if (candidates.length > 0) {
-    const vecs = await embedBatch(candidates, apiKey);
-    log.debug({ durationMs: Date.now() - t0 }, 'L3 batch embed done');
-    for (let i = 0; i < candidates.length; i++) {
-      const vec = vecs[i];
-      if (!vec) continue;
-      const results = searchIndex(db, vec);
-      trackBest(results);
-      const best = bestAboveThreshold(results);
-      if (best) {
-        log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
-        const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
-        if (skeleton) {
-          return {
-            match: {
-              source: best.entry.source as 'phosphor' | 'phylopic',
-              id: best.entry.id,
-              similarity: best.similarity,
-              layer: 3,
-              svgPath: best.entry.svg_path,
-            },
-            skeletons: [skeleton],
-          };
-        }
-        log.warn({ via: candidates[i], durationMs: Date.now() - t0 }, 'L3 skeleton null');
+  // 5s timer: when both timerFired and l4Done are set, abort L3
+  const timer = setTimeout(() => {
+    timerFired = true;
+    if (l4Done) l3Controller.abort();
+  }, 5000);
+
+  // L4 task: runs concurrently; sets flags and stores result for use if L3 misses
+  const l4Task = (async () => {
+    const svg = await l4GenerateSvg(normalised, apiKey, l4Controller.signal);
+    l4Done = true;
+    if (timerFired) l3Controller.abort();
+    if (svg) {
+      log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 SVG generated');
+      const skeleton = svgToSkeletonWithOpts(svg);
+      if (skeleton) {
+        l4Result = {
+          match: { source: 'llm', id: `llm:${normalised}`, similarity: 0, layer: 4, svgPath: svg },
+          skeletons: [skeleton],
+        };
+      } else {
+        log.warn({ durationMs: Date.now() - t0 }, 'L4 skeleton null');
       }
     }
-  }
-  log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
+  })();
 
-  // L4: LLM SVG generation
-  const svg = await l4GenerateSvg(normalised, apiKey);
-  if (svg) {
-    log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 SVG generated');
-    const skeleton = svgToSkeletonWithOpts(svg);
-    if (skeleton) {
-      return {
-        match: {
-          source: 'llm',
-          id: `llm:${normalised}`,
-          similarity: 0,
-          layer: 4,
-          svgPath: svg,
-        },
-        skeletons: [skeleton],
-      };
+  // L3 task: wins immediately on a valid index result; abortable via l3Controller
+  const l3Task = (async (): Promise<PipelineResult | null> => {
+    const candidates = await l3Candidates(normalised, apiKey, l3Controller.signal);
+    log.debug({ candidates, durationMs: Date.now() - t0 }, 'L3 candidates');
+
+    if (candidates.length > 0) {
+      const vecs = await embedBatch(candidates, apiKey);
+      log.debug({ durationMs: Date.now() - t0 }, 'L3 batch embed done');
+      for (let i = 0; i < candidates.length; i++) {
+        const vec = vecs[i];
+        if (!vec) continue;
+        const results = searchIndex(db, vec);
+        trackBest(results);
+        const best = bestAboveThreshold(results);
+        if (best) {
+          log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
+          const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
+          if (skeleton) {
+            clearTimeout(timer);
+            l4Controller.abort();
+            return {
+              match: { source: best.entry.source as 'phosphor' | 'phylopic', id: best.entry.id, similarity: best.similarity, layer: 3, svgPath: best.entry.svg_path },
+              skeletons: [skeleton],
+            };
+          }
+          log.warn({ via: candidates[i], durationMs: Date.now() - t0 }, 'L3 skeleton null');
+        }
+      }
     }
-    log.warn({ durationMs: Date.now() - t0 }, 'L4 skeleton null');
+    log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
+    return null;
+  })();
+
+  // Await L3 (L4 runs concurrently and may abort L3 via timer + l4Done)
+  const l3Result = await l3Task;
+
+  if (l3Result !== null) {
+    // L3 won — wait for L4 to settle (already aborted inside l3Task)
+    await l4Task;
+    return l3Result;
+  }
+
+  // L3 missed — clear timer (L3 is done, no longer needs aborting) and await L4
+  clearTimeout(timer);
+  await l4Task;
+
+  if (l4Result !== null) {
+    return l4Result;
   }
 
   // Fallback: use best cosine result seen, or triangle if nothing was found
@@ -405,13 +429,7 @@ export async function retrieveSkeleton(
     const skeleton = svgToSkeletonWithOpts(b.entry.svg_path);
     if (skeleton) {
       return {
-        match: {
-          source: b.entry.source as 'phosphor' | 'phylopic',
-          id: b.entry.id,
-          similarity: b.similarity,
-          layer: 1,
-          svgPath: b.entry.svg_path,
-        },
+        match: { source: b.entry.source as 'phosphor' | 'phylopic', id: b.entry.id, similarity: b.similarity, layer: 1, svgPath: b.entry.svg_path },
         skeletons: [skeleton],
       };
     }
