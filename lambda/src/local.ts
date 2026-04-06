@@ -94,9 +94,16 @@ const server = http.createServer(async (req, res) => {
 
   log.info({ word, excludeSeeds }, 'Retrieving skeleton');
   const result = await retrieveSkeleton(word, db, API_KEY);
+
+  if (result.match === null) {
+    res.writeHead(422);
+    res.end(JSON.stringify({ error: 'No constellation found.' }));
+    return;
+  }
+
   if (useCache) cache.set(word, result);
 
-  log.info({ word, layer: result.match?.layer ?? 'fallback', source: result.match?.source ?? 'none' }, 'Pipeline complete');
+  log.info({ word, layer: result.match.layer, source: result.match.source }, 'Pipeline complete');
 
   const catalogue = getCatalogue();
   const excludeSet = new Set<number>(excludeSeeds);

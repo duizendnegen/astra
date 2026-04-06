@@ -5,11 +5,6 @@ export interface Skeleton {
 
 export { retrieveSkeleton, type PipelineResult, type MatchProvenance } from './retrieval.js';
 
-export const TRIANGLE_FALLBACK: Skeleton = {
-  points: [[0.5, 0], [0, 1], [1, 1]],
-  edges: [[0, 1], [1, 2], [2, 0]],
-};
-
 export function normaliseSkeleton(obj: unknown): Skeleton | null {
   if (typeof obj !== 'object' || obj === null) return null;
   const s = obj as Record<string, unknown>;

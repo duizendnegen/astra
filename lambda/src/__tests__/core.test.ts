@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isValidSkeleton, TRIANGLE_FALLBACK } from '../core';
+import { isValidSkeleton } from '../core';
 
 describe('isValidSkeleton', () => {
   it('accepts a valid skeleton', () => {
@@ -44,9 +44,5 @@ describe('isValidSkeleton', () => {
       points: [[0, 0], [0.5, 1], [1, 0]],
       edges: [[0, 1]],
     })).toBe(false);
-  });
-
-  it('accepts the triangle fallback itself', () => {
-    expect(isValidSkeleton(TRIANGLE_FALLBACK)).toBe(true);
   });
 });

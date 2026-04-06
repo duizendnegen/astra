@@ -11,7 +11,7 @@
 
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import { TRIANGLE_FALLBACK, type Skeleton } from './core.js';
+import type { Skeleton } from './core.js';
 import { svgToSkeleton, rdpSimplify, visvalingamWhyatt, type SimplifyFn } from './svg-to-skeleton.js';
 import { createLogger } from './logger.js';
 import path from 'path';
@@ -304,19 +304,10 @@ export async function retrieveSkeleton(
   const normalised = normalise(word);
   log.debug({ word, normalised }, 'L0 normalised');
 
-  // Track the best index result seen across L1 and L3 (for best-cosine fallback)
-  let bestSeen: SearchResult | null = null;
-  function trackBest(results: SearchResult[]) {
-    if (results[0] && (!bestSeen || results[0].similarity > bestSeen.similarity)) {
-      bestSeen = results[0];
-    }
-  }
-
   // L1: embed + search
   const queryVec = await embed(normalised, apiKey);
   if (queryVec) {
     const results = searchIndex(db, queryVec);
-    trackBest(results);
     const best = bestAboveThreshold(results);
     if (best) {
       log.info({ id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
@@ -384,7 +375,6 @@ export async function retrieveSkeleton(
         const vec = vecs[i];
         if (!vec) continue;
         const results = searchIndex(db, vec);
-        trackBest(results);
         const best = bestAboveThreshold(results);
         if (best) {
           log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
@@ -422,18 +412,6 @@ export async function retrieveSkeleton(
     return l4Result;
   }
 
-  // Fallback: use best cosine result seen, or triangle if nothing was found
-  if (bestSeen) {
-    const b = bestSeen as SearchResult;
-    log.info({ id: b.entry.id, similarity: b.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'best-cosine fallback');
-    const skeleton = svgToSkeletonWithOpts(b.entry.svg_path);
-    if (skeleton) {
-      return {
-        match: { source: b.entry.source as 'phosphor' | 'phylopic', id: b.entry.id, similarity: b.similarity, layer: 1, svgPath: b.entry.svg_path },
-        skeletons: [skeleton],
-      };
-    }
-  }
-  log.warn({ durationMs: Date.now() - t0 }, 'All layers failed — returning triangle fallback');
-  return { match: null, skeletons: [TRIANGLE_FALLBACK] };
+  log.warn({ durationMs: Date.now() - t0 }, 'All layers failed — no constellation found');
+  return { match: null, skeletons: [] };
 }

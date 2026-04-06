@@ -2,7 +2,6 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { TRIANGLE_FALLBACK } from './core.js';
 import { retrieveSkeleton, getSharedIndex, type MatchProvenance } from './retrieval.js';
 import type { Skeleton } from './core.js';
 
@@ -56,15 +55,16 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   const apiKey = await getApiKey();
   const result = await retrieveSkeleton(word, db, apiKey);
 
-  const isFallback = result.skeletons.length === 1 && result.skeletons[0] === TRIANGLE_FALLBACK;
-  if (!isFallback) {
-    await dynamo.send(
-      new PutCommand({
-        TableName: TABLE_NAME,
-        Item: { word, match: result.match ?? null, skeletons: result.skeletons },
-      }),
-    );
+  if (result.match === null) {
+    return { statusCode: 422, headers, body: JSON.stringify({ error: 'No constellation found.' }) };
   }
+
+  await dynamo.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: { word, match: result.match, skeletons: result.skeletons },
+    }),
+  );
 
   return { statusCode: 200, headers, body: JSON.stringify({ skeletons: result.skeletons }) };
 }

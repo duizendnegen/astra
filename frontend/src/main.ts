@@ -86,6 +86,7 @@ function setLoading(loading: boolean): void {
   if (loading) {
     catalogueStatus.textContent = 'Finding your constellation…';
     catalogueStatus.classList.remove('fading');
+    catalogueStatus.classList.remove('status-error');
     loadingIntervalId = setInterval(cycleLoadingMessage, 3500);
   } else {
     if (loadingIntervalId !== null) {
@@ -94,6 +95,7 @@ function setLoading(loading: boolean): void {
     }
     catalogueStatus.textContent = '';
     catalogueStatus.classList.remove('fading');
+    catalogueStatus.classList.remove('status-error');
   }
 }
 
@@ -101,23 +103,41 @@ function setLoading(loading: boolean): void {
 
 async function findConstellation(word: string): Promise<void> {
   setLoading(true);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20_000);
+
+  let errorMessage = '';
   try {
     const res = await fetch('/api/constellation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ word, excludeSeeds: Array.from(usedPatches) }),
+      signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
-    const { constellation, seedStarId } = await res.json() as { constellation: MatchResult; seedStarId?: number };
-    if (!constellation) throw new Error('No patch found — try again');
-
-    if (seedStarId != null) usedPatches.add(seedStarId);
-    currentState = { word, match: constellation };
-    showResult(currentState);
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      errorMessage = 'No constellation found.';
+    } else {
+      const { constellation, seedStarId } = await res.json() as { constellation: MatchResult; seedStarId?: number };
+      if (!constellation) {
+        errorMessage = 'No constellation found.';
+      } else {
+        if (seedStarId != null) usedPatches.add(seedStarId);
+        currentState = { word, match: constellation };
+        showResult(currentState);
+      }
+    }
   } catch (err) {
-    catalogueStatus.textContent = err instanceof Error ? err.message : 'Something went wrong';
+    clearTimeout(timeoutId);
+    errorMessage = 'No constellation found.';
   } finally {
     setLoading(false);
+  }
+
+  if (errorMessage) {
+    catalogueStatus.textContent = errorMessage;
+    catalogueStatus.classList.add('status-error');
   }
 }
 

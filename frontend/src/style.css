@@ -118,6 +118,9 @@ html, body {
 .status-hint.fading {
   opacity: 0;
 }
+.status-hint.status-error {
+  opacity: 0.8;
+}
 
 /* ── Result ── */
 #result {
