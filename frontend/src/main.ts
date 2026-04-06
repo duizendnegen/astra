@@ -50,10 +50,51 @@ function showLanding(): void {
   animateToLanding();
 }
 
+const LOADING_MESSAGES = [
+  'Aligning the stars…',
+  'Sifting through stardust…',
+  'Charting the sky…',
+  'Tracing the Milky Way…',
+  'Mapping the cosmos…',
+  'Measuring light years…',
+  'Calibrating telescopes…',
+  'Listening for echoes…',
+  'Catching starlight…',
+  'Drawing the dots…',
+  'Adjusting for stellar drift…',
+  'Parsing the zodiac…',
+  'Discovering the galaxy…',
+  'Chasing shooting stars…',
+];
+
+let loadingIntervalId: ReturnType<typeof setInterval> | null = null;
+
+function cycleLoadingMessage(): void {
+  const pool = LOADING_MESSAGES.filter(m => m !== catalogueStatus.textContent);
+  const next = pool[Math.floor(Math.random() * pool.length)];
+  catalogueStatus.classList.add('fading');
+  setTimeout(() => {
+    catalogueStatus.textContent = next;
+    catalogueStatus.classList.remove('fading');
+  }, 500);
+}
+
 function setLoading(loading: boolean): void {
   findBtn.disabled = loading;
   wordInput.disabled = loading;
-  catalogueStatus.textContent = loading ? 'Finding your constellation…' : '';
+
+  if (loading) {
+    catalogueStatus.textContent = 'Finding your constellation…';
+    catalogueStatus.classList.remove('fading');
+    loadingIntervalId = setInterval(cycleLoadingMessage, 3500);
+  } else {
+    if (loadingIntervalId !== null) {
+      clearInterval(loadingIntervalId);
+      loadingIntervalId = null;
+    }
+    catalogueStatus.textContent = '';
+    catalogueStatus.classList.remove('fading');
+  }
 }
 
 // ── Core flow ─────────────────────────────────────────────────────────────

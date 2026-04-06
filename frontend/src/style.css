@@ -113,6 +113,10 @@ html, body {
   opacity: 0.5;
   letter-spacing: 0.1em;
   min-height: 1rem;
+  transition: opacity 0.5s ease;
+}
+.status-hint.fading {
+  opacity: 0;
 }
 
 /* ── Result ── */
