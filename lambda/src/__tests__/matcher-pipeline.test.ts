@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { match } from '../matcher';
+import { match, selectDiverse } from '../matcher';
 import type { Star, Skeleton } from '../types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -158,5 +158,65 @@ describe('scorer dispatch', () => {
     expect(result).not.toBeNull();
     expect(result!.procrustesScore).toBeDefined();
     expect(result!.procrustesScore!).toBeGreaterThan(0);
+  });
+});
+
+// ── Phase 3 candidate pool ────────────────────────────────────────────────
+
+describe('runPhase2And3 collects all phase3 candidates', () => {
+  it('evaluates multiple Phase 3 candidates when the catalogue is rich', () => {
+    // A rich catalogue means many Phase 1 candidates advance, so Phase 3 evaluates
+    // more than one candidate. phase3Candidates on the result reflects the count.
+    const catalogue = triangleStars();
+    const skeleton = triangleSkeleton();
+    const result = match(catalogue, [skeleton], new Set(), {
+      model: 'skeleton-shape',
+      generator: 'anchor-pair',
+      seedMaxMag: 5,
+      phase3Cap: 5,
+    });
+    expect(result).not.toBeNull();
+    expect(result!.phase3Candidates).toBeGreaterThan(1);
+  });
+});
+
+// ── Diversity selection ───────────────────────────────────────────────────
+
+describe('selectDiverse', () => {
+  type C = { score: number; patchRA: number; patchDec: number; label: string };
+
+  const top: C    = { score: 0.87, patchRA: 102, patchDec: -17, label: 'top' };
+  const distant: C = { score: 0.84, patchRA: 219, patchDec:  45, label: 'distant' };   // ~117° away
+  const close: C  = { score: 0.86, patchRA: 108, patchDec: -14, label: 'close' };     // ~7° away
+  const bad: C    = { score: 0.75, patchRA: 219, patchDec:  45, label: 'bad' };        // >10% below top
+
+  it('3.2 prefers a distant acceptable candidate over the top result', () => {
+    // distant is within 10% tolerance (0.84 >= 0.87*0.9=0.783) and 30°+ away
+    const result = selectDiverse([top, distant], () => 0);
+    expect(result!.label).toBe('distant');
+  });
+
+  it('3.3 falls back to top when no distant candidate exists', () => {
+    // close is acceptable (within 10%) but only ~7° away — not distant
+    const result = selectDiverse([top, close]);
+    expect(result!.label).toBe('top');
+  });
+
+  it('3.4a candidate at exactly 10% below top score is acceptable', () => {
+    // 0.87 * 0.90 = 0.783; score 0.783 is exactly at the boundary → acceptable
+    const boundary: C = { score: 0.87 * 0.90, patchRA: 219, patchDec: 45, label: 'boundary' };
+    const result = selectDiverse([top, boundary], () => 0);
+    expect(result!.label).toBe('boundary');
+  });
+
+  it('3.4b candidate at 10.1% below top score is not acceptable', () => {
+    // 0.87 * (1 - 0.101) = ~0.782 < 0.783 → outside tolerance
+    const outside: C = { score: 0.87 * (1 - 0.101), patchRA: 219, patchDec: 45, label: 'outside' };
+    const result = selectDiverse([top, outside]);
+    expect(result!.label).toBe('top');
+  });
+
+  it('returns null for an empty pool', () => {
+    expect(selectDiverse([])).toBeNull();
   });
 });

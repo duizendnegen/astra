@@ -44,8 +44,10 @@ SHALL advance to Phase 3.
 **Phase 3 — Hungarian refinement:** For the top 20 Phase 2 candidates, the K=20 nearest stars per
 vertex SHALL be gathered into a union set (expanding to 6° if fewer than K found). A cost matrix
 of `distance + brightnessWeight × (mag / 6)` SHALL be built and solved with the Hungarian
-algorithm (Jonker-Volgenant). The selected scorer then ranks Phase 3 candidates and the
-globally best result SHALL be returned.
+algorithm (Jonker-Volgenant). The selected scorer then ranks Phase 3 candidates. `runPhase2And3`
+SHALL return ALL Phase 3 candidates in descending score order (not just the best). `match()` SHALL
+apply diversity selection across the combined candidate pool from all skeleton variants before
+returning a result.
 
 #### Scenario: Principal axis from maximum pairwise distance
 - **WHEN** a skeleton is evaluated
@@ -58,6 +60,10 @@ globally best result SHALL be returned.
 #### Scenario: Phase 3 assigns exactly one star per vertex
 - **WHEN** a candidate completes Phase 3
 - **THEN** one star is optimally assigned to each skeleton vertex via Hungarian algorithm
+
+#### Scenario: All Phase 3 candidates returned
+- **WHEN** `runPhase2And3` evaluates 20 Phase 3 candidates
+- **THEN** it returns all 20 results in descending score order, not just the top-1
 
 ### Requirement: Phase 3 skips candidates where nearby star count < vertex count (n>m guard)
 `runPhase2And3` SHALL skip any Phase 3 candidate where `nearby.length < nVtx` before calling

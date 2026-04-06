@@ -698,7 +698,7 @@ function runPhase2And3(
   nVtx: number,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
-): (ScoreResult & { seed: Star }) | null {
+): (ScoreResult & { seed: Star })[] {
   const GREEDY_K = 50;
   const HUNGARIAN_K = cfg.phase3Cap ?? 20;
   const GREEDY_SEARCH_R = 3;
@@ -735,7 +735,7 @@ function runPhase2And3(
   greedyTop.sort((a, b) => b.score - a.score);
 
   // Phase 3: full Hungarian assignment + multi-score evaluation
-  let bestResult: (ScoreResult & { seed: Star }) | null = null;
+  const results: (ScoreResult & { seed: Star })[] = [];
 
   const phase3Slice = greedyTop.slice(0, HUNGARIAN_K);
   const phase3Count = phase3Slice.length;
@@ -782,24 +782,23 @@ function runPhase2And3(
       selectionScore = shapeScore;
     }
 
-    if (!bestResult || selectionScore > bestResult.score) {
-      bestResult = {
-        score: selectionScore,
-        shapeScore,
-        vertexFitScore,
-        procrustesScore,
-        stars: nearby,
-        constellationStars,
-        skeletonRaDec: physVerts.map(([ra, dec]) => ({ ra, dec })),
-        seed,
-        phase1Candidates: phase1Count,
-        phase2Candidates: phase2Count,
-        phase3Candidates: phase3Count,
-      };
-    }
+    results.push({
+      score: selectionScore,
+      shapeScore,
+      vertexFitScore,
+      procrustesScore,
+      stars: nearby,
+      constellationStars,
+      skeletonRaDec: physVerts.map(([ra, dec]) => ({ ra, dec })),
+      seed,
+      phase1Candidates: phase1Count,
+      phase2Candidates: phase2Count,
+      phase3Candidates: phase3Count,
+    });
   }
 
-  return bestResult;
+  results.sort((a, b) => b.score - a.score);
+  return results;
 }
 
 // ── Spatial grid for fast nearest-star queries ───────────────────────────
@@ -873,7 +872,7 @@ function pairwiseAnchorSearch(
   excludeSeeds: Set<number>,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
-): (ScoreResult & { seed: Star }) | null {
+): (ScoreResult & { seed: Star })[] {
   const { points, edges } = skeleton;
   const nVtx = points.length;
 
@@ -890,7 +889,7 @@ function pairwiseAnchorSearch(
       if (d > maxAxisDist) { maxAxisDist = d; axisU = a; axisV = b; }
     }
   }
-  if (maxAxisDist < 0.01) return null; // degenerate skeleton
+  if (maxAxisDist < 0.01) return []; // degenerate skeleton
 
   const MIN_SPAN = 2;   // degrees
   const MAX_SPAN = 25;  // degrees
@@ -966,13 +965,13 @@ function pairwiseAnchorSearch(
 
   const tPrescreen = performance.now() - t0;
   log.debug({ candidates: phase1Top.length, durationMs: tPrescreen.toFixed(0) }, 'prescreen done');
-  if (phase1Top.length === 0) { log.debug('phase1Top empty → null'); return null; }
+  if (phase1Top.length === 0) { log.debug('phase1Top empty → []'); return []; }
   phase1Top.sort((a, b) => b.score - a.score);
   log.debug({ topScore: phase1Top[0].score.toFixed(2), anchor: phase1Top[0].seed.id }, 'prescreen top');
 
-  const result = runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
-  log.debug({ bestScore: result?.score.toFixed(3) ?? 'none' }, 'pairwise done');
-  return result;
+  const results = runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
+  log.debug({ bestScore: results[0]?.score.toFixed(3) ?? 'none', count: results.length }, 'pairwise done');
+  return results;
 }
 
 function singleSweepSearch(
@@ -981,7 +980,7 @@ function singleSweepSearch(
   excludeSeeds: Set<number>,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
-): (ScoreResult & { seed: Star }) | null {
+): (ScoreResult & { seed: Star })[] {
   const { points, edges } = skeleton;
   const nVtx = points.length;
 
@@ -996,7 +995,7 @@ function singleSweepSearch(
       if (d > maxAxisDist) maxAxisDist = d;
     }
   }
-  if (maxAxisDist < 0.01) return null;
+  if (maxAxisDist < 0.01) return [];
 
   const SCALES_DEG = [5, 10, 15, 20, 25, 30];
   const CANDIDATE_CAP = 2000;
@@ -1041,7 +1040,7 @@ function singleSweepSearch(
     }
   }
 
-  if (phase1Top.length === 0) return null;
+  if (phase1Top.length === 0) return [];
   phase1Top.sort((a, b) => b.score - a.score);
   return runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
 }
@@ -1052,7 +1051,7 @@ function anyVertexSearch(
   excludeSeeds: Set<number>,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
-): (ScoreResult & { seed: Star }) | null {
+): (ScoreResult & { seed: Star })[] {
   const { points, edges } = skeleton;
   const nVtx = points.length;
 
@@ -1071,7 +1070,7 @@ function anyVertexSearch(
       if (d > maxAxisDist) maxAxisDist = d;
     }
   }
-  if (maxAxisDist < 0.01) return null;
+  if (maxAxisDist < 0.01) return [];
 
   const CANDIDATE_CAP = 2000;
   const SECOND_STAR_RADIUS = 15; // degrees
@@ -1144,7 +1143,7 @@ function anyVertexSearch(
     }
   }
 
-  if (phase1Top.length === 0) return null;
+  if (phase1Top.length === 0) return [];
   phase1Top.sort((a, b) => b.score - a.score);
   return runPhase2And3(phase1Top, edges, nVtx, cfg, grid);
 }
@@ -1152,6 +1151,23 @@ function anyVertexSearch(
 // ── Public API ────────────────────────────────────────────────────────────
 
 const ORION_SPAN_DEG = 25;
+const DIVERSITY_TOLERANCE = 0.10;
+const DIVERSITY_MIN_DEG = 30;
+
+/** Select a candidate from a scored pool, preferring a sky-distant acceptable one over the top.
+ *  Exported for unit testing; production code always uses the default random. */
+export function selectDiverse<T extends { score: number; patchRA: number; patchDec: number }>(
+  pool: T[],
+  random: () => number = Math.random,
+): T | null {
+  if (pool.length === 0) return null;
+  const top = pool.reduce((best, c) => (c.score > best.score ? c : best), pool[0]);
+  const acceptable = pool.filter(c => c.score >= top.score * (1 - DIVERSITY_TOLERANCE));
+  const distant = acceptable.filter(c =>
+    distanceDeg(c.patchRA, c.patchDec, top.patchRA, top.patchDec) >= DIVERSITY_MIN_DEG,
+  );
+  return distant.length > 0 ? distant[Math.floor(random() * distant.length)] : top;
+}
 
 export function match(
   catalogue: Star[],
@@ -1162,7 +1178,8 @@ export function match(
   const cfg = resolveConfig(config);
   const grid = new SpatialGrid(catalogue);
 
-  let globalBest: (ScoreResult & { seed: Star; variantIndex: number }) | null = null;
+  type PoolEntry = ScoreResult & { seed: Star; variantIndex: number; patchRA: number; patchDec: number };
+  const pool: PoolEntry[] = [];
 
   const tMatch = performance.now();
   log.info({ catalogueSize: catalogue.length, skeletons: skeletons.length, generator: cfg.generator, scorer: cfg.scorer }, 'search start');
@@ -1173,10 +1190,13 @@ export function match(
 
   for (let i = 0; i < skeletons.length; i++) {
     try {
-      const result = searchFn(skeletons[i], catalogue, excludeSeeds, cfg, grid);
-      if (!result) { log.debug({ index: i }, 'skeleton returned null'); continue; }
-      if (!globalBest || result.score > globalBest.score) {
-        globalBest = { ...result, variantIndex: i };
+      const candidates = searchFn(skeletons[i], catalogue, excludeSeeds, cfg, grid);
+      if (candidates.length === 0) { log.debug({ index: i }, 'skeleton returned no candidates'); continue; }
+      for (const c of candidates) {
+        const physRaDec = c.skeletonRaDec;
+        const patchRA = physRaDec.reduce((s, v) => s + v.ra, 0) / physRaDec.length;
+        const patchDec = physRaDec.reduce((s, v) => s + v.dec, 0) / physRaDec.length;
+        pool.push({ ...c, variantIndex: i, patchRA, patchDec });
       }
     } catch (e) {
       log.error({ index: i, err: e }, 'error in skeleton');
@@ -1185,37 +1205,61 @@ export function match(
   const durationMs = (performance.now() - tMatch).toFixed(0);
   log.info({ durationMs }, 'search done');
 
-  if (!globalBest || globalBest.constellationStars.length === 0) return null;
+  if (pool.length === 0) return null;
 
-  const actualSpan = maxPairwiseAngularDist(globalBest.constellationStars);
+  pool.sort((a, b) => b.score - a.score);
+  const topResult = pool[0];
+  const topScore = topResult.score;
+  const acceptable = pool.filter(c => c.score >= topScore * (1 - DIVERSITY_TOLERANCE));
+  const distant = acceptable.filter(c =>
+    distanceDeg(c.patchRA, c.patchDec, topResult.patchRA, topResult.patchDec) >= DIVERSITY_MIN_DEG,
+  );
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  const selected = selectDiverse(pool)!;
+  const diversified = selected !== topResult;
+
+  log.info(
+    {
+      poolSize: pool.length,
+      topScore: topScore.toFixed(3),
+      topRA: topResult.patchRA.toFixed(1),
+      topDec: topResult.patchDec.toFixed(1),
+      acceptableCount: acceptable.length,
+      distantCount: distant.length,
+      diversified,
+      selectedScore: selected.score.toFixed(3),
+      selectedRA: selected.patchRA.toFixed(1),
+      selectedDec: selected.patchDec.toFixed(1),
+    },
+    'diversity selection',
+  );
+
+  if (selected.constellationStars.length === 0) return null;
+
+  const actualSpan = maxPairwiseAngularDist(selected.constellationStars);
   if (actualSpan > cfg.maxSpanDeg) {
     log.warn({ actualSpan: actualSpan.toFixed(1), maxSpanDeg: cfg.maxSpanDeg }, 'span exceeds maxSpanDeg — rejecting match');
     return null;
   }
 
-  excludeSeeds.add(globalBest.seed.id);
+  excludeSeeds.add(selected.seed.id);
 
-  log.info({ variantIndex: globalBest.variantIndex, shapeScore: (globalBest.shapeScore * 100).toFixed(1), vertexFitScore: (globalBest.vertexFitScore * 100).toFixed(1) }, 'variant won');
-
+  log.info({ variantIndex: selected.variantIndex, shapeScore: (selected.shapeScore * 100).toFixed(1), vertexFitScore: (selected.vertexFitScore * 100).toFixed(1) }, 'variant won');
   log.debug({ spanDeg: actualSpan.toFixed(1), orionPct: Math.round((actualSpan / ORION_SPAN_DEG) * 100) }, 'pattern size');
 
-  const physRaDec = globalBest.skeletonRaDec;
-  const patchRA = physRaDec.reduce((s, v) => s + v.ra, 0) / physRaDec.length;
-  const patchDec = physRaDec.reduce((s, v) => s + v.dec, 0) / physRaDec.length;
-
   return {
-    stars: globalBest.stars,
-    constellationStars: globalBest.constellationStars,
-    edges: skeletons[globalBest.variantIndex].edges,
-    patchRA,
-    patchDec,
-    shapeScore: globalBest.shapeScore,
-    vertexFitScore: globalBest.vertexFitScore,
-    procrustesScore: globalBest.procrustesScore,
-    phase1Candidates: globalBest.phase1Candidates,
-    phase2Candidates: globalBest.phase2Candidates,
-    phase3Candidates: globalBest.phase3Candidates,
-    skeletonPoints: globalBest.skeletonRaDec,
-    variantIndex: globalBest.variantIndex,
+    stars: selected.stars,
+    constellationStars: selected.constellationStars,
+    edges: skeletons[selected.variantIndex].edges,
+    patchRA: selected.patchRA,
+    patchDec: selected.patchDec,
+    shapeScore: selected.shapeScore,
+    vertexFitScore: selected.vertexFitScore,
+    procrustesScore: selected.procrustesScore,
+    phase1Candidates: selected.phase1Candidates,
+    phase2Candidates: selected.phase2Candidates,
+    phase3Candidates: selected.phase3Candidates,
+    skeletonPoints: selected.skeletonRaDec,
+    variantIndex: selected.variantIndex,
   };
 }
