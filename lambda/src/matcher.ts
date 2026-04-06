@@ -93,9 +93,8 @@ function distanceDeg(ra1: number, dec1: number, ra2: number, dec2: number): numb
 
 export type Point2D = [number, number];
 
-/** Legacy utility — kept for unit tests. Not used in the matching hot path
- *  since fix-normalization replaced it with a seed-anchored physical frame. */
-export function normalise(points: Point2D[]): Point2D[] {
+/** Normalise skeleton points to ~[-0.5, 0.5] with aspect ratio preserved. */
+function normalise(points: Point2D[]): Point2D[] {
   const xs = points.map((p) => p[0]);
   const ys = points.map((p) => p[1]);
   const minX = Math.min(...xs), maxX = Math.max(...xs);

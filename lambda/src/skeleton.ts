@@ -49,7 +49,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   // Cache read — treat legacy entries (no match field) as misses
   const cached = await dynamo.send(new GetCommand({ TableName: TABLE_NAME, Key: { word } }));
   const item = cached.Item as CacheItem | undefined;
-  if (item?.skeletons && 'match' in item) {
+  if (item?.skeletons) {
     return { statusCode: 200, headers, body: JSON.stringify({ skeletons: item.skeletons }) };
   }
 
