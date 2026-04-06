@@ -69,9 +69,9 @@ The L4 model SHALL be configurable via the `L4_MODEL` environment variable (defa
 - **WHEN** neither L1 nor L3 produces a match (e.g. "banana")
 - **THEN** the LLM generates an SVG and L5 converts it to a skeleton
 
-#### Scenario: Invalid SVG falls back to triangle
+#### Scenario: Invalid SVG returns TRIANGLE_FALLBACK, caller returns 422
 - **WHEN** L4 LLM returns an unparseable or empty SVG
-- **THEN** the pipeline returns TRIANGLE_FALLBACK
+- **THEN** the pipeline returns `{ match: null, skeletons: [] }` and the caller returns HTTP 422
 
 ### Requirement: Match provenance recorded
 The system SHALL record which layer produced the match (`1`, `3`, or `4`), the matched entry id and source, the cosine similarity score, and the svg_path used. This provenance SHALL be stored in the DynamoDB cache entry and returned as part of the internal pipeline result for logging.

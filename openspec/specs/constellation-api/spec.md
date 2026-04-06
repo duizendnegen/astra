@@ -7,11 +7,17 @@ matcher and return a single JSON response with `constellation`, `skeleton`, and 
 The `constellation` field SHALL contain `constellationStars`, `edges`, `patchRA`, `patchDec`,
 `shapeScore`, and `vertexFitScore`. The `skeleton` field SHALL contain `points` and `edges`
 in normalised coordinates. The `match` field SHALL contain match provenance (`source`, `id`,
-`similarity`, `layer`).
+`similarity`, `layer`). When the retrieval pipeline returns no match (all layers failed), the
+endpoint SHALL return HTTP 422 with body `{ "error": "No constellation found." }` instead of
+a 200 response.
 
 #### Scenario: Successful request returns all fields
 - **WHEN** a POST request is sent with `{ "word": "orion" }`
 - **THEN** the response has status 200 and a body containing `constellation`, `skeleton`, and `match` fields
+
+#### Scenario: No constellation found returns 422
+- **WHEN** the retrieval pipeline returns no match
+- **THEN** the response has status 422 with `{ "error": "No constellation found." }`
 
 #### Scenario: Missing word returns 400
 - **WHEN** a POST request is sent with an empty body or missing `word` field
