@@ -26,12 +26,11 @@
     "@aws-sdk/client-dynamodb": "^3.1019.0",
     "@aws-sdk/client-ssm": "^3.1023.0",
     "@aws-sdk/lib-dynamodb": "^3.1019.0",
-    "@esbuild/win32-x64": "^0.21.5",
-    "@rollup/rollup-win32-x64-msvc": "^4.60.1",
     "better-sqlite3": "^9.4.3",
     "compromise": "^14.14.4",
     "concaveman": "^1.2.1",
     "pino": "^9.0.0",
+    "polygon-clipping": "^0.15.7",
     "sqlite-vec": "^0.1.9"
   },
   "optionalDependencies": {

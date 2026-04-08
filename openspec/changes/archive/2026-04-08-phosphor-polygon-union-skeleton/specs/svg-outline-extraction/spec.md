@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Concave hull contour extraction
 The outline extractor SHALL accept a flat array of normalised 2D points (the merged point cloud from all sampled subpaths) and return a single closed contour computed via concave hull. The hull SHALL be parameterised by a `concavity` scalar: higher values produce a more convex result (approaching the convex hull); lower values produce a tighter fit that captures finer concavities. The default `concavity` SHALL be tuned to capture body-scale negative space (e.g. the gap between an eagle's wing tips, the inner curve of a crescent) while smoothing over stroke-scale noise (e.g. gaps between individual feather strokes in line-art).
@@ -24,6 +24,8 @@ This strategy SHALL be used when `strategy` is `'concave-hull'` (the default). I
 #### Scenario: Degenerate input returns null
 - **WHEN** the point cloud contains fewer than 3 points
 - **THEN** the extractor returns null rather than producing a degenerate contour
+
+## ADDED Requirements
 
 ### Requirement: Polygon-union contour extraction
 The outline extractor SHALL support a second contour strategy: `'polygon-union'`. When selected, it SHALL treat each sampled subpath as a polygon, compute the boolean union of all subpath polygons using `polygon-clipping`, and return the outer ring of the largest resulting polygon by area.

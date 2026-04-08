@@ -34,23 +34,23 @@ The extractor SHALL expose a simplification strategy parameter. The default algo
 - **THEN** epsilon is reduced and RDP is retried until at least 15 points are produced (or a minimum epsilon floor is reached)
 
 ### Requirement: Edge derivation from path continuity
-The extractor SHALL derive edges by connecting adjacent points along the extracted outer boundary contour. Since the concave hull extraction produces a single closed contour, edges SHALL connect consecutive points `[i, i+1]` for all points, with an additional closing edge from the last point back to the first.
+The extractor SHALL derive edges by connecting adjacent points along the extracted outer boundary contour. Both the concave hull and polygon-union strategies return a single closed contour; edges SHALL connect consecutive points `[i, i+1]` for all points, with an additional closing edge from the last point back to the first.
 
 #### Scenario: Outer contour forms a closed loop
-- **WHEN** the concave hull extractor returns a single closed contour
+- **WHEN** either extractor returns a single closed contour
 - **THEN** edges connect every consecutive pair of simplified points and the last point connects back to the first
 
 #### Scenario: No cross-subpath bridging needed
 - **WHEN** the SVG contains multiple original subpaths
-- **THEN** no special sub-path membership tracking is needed, as the concave hull step operates on the unified point cloud and returns one boundary
+- **THEN** no special sub-path membership tracking is needed, as both extraction strategies return one boundary
 
 ### Requirement: Sub-step caching
 The extractor SHALL cache intermediate results keyed as follows:
 - SVG parse + normalisation: keyed by SHA-256 hash of the raw svg_path string
 - Dense point cloud: keyed by the same hash
-- Simplified skeleton: keyed by `(svgHash, algorithmName, epsilon, "outline-v2")`
+- Simplified skeleton: keyed by `(svgHash, algorithmName, epsilon, strategy, "outline-v3")`
 
-The `"outline-v2"` suffix SHALL be appended to all skeleton cache keys to distinguish concave-hull skeletons from prior union-based skeletons (`"outline-v1"`), ensuring stale cache entries are not served.
+The `"outline-v3"` suffix SHALL be appended to all skeleton cache keys to distinguish strategy-aware skeletons from prior entries, ensuring stale cache entries are not served.
 
 Cached results SHALL be stored in memory within a single Lambda invocation. A persistent disk cache MAY be used during local development (e.g. in `data/l5-cache/`).
 
@@ -59,12 +59,12 @@ Cached results SHALL be stored in memory within a single Lambda invocation. A pe
 - **THEN** the second call reuses the cached dense point cloud and only re-runs contour extraction and simplification
 
 #### Scenario: Re-run with same parameters returns cached result
-- **WHEN** the extractor is called twice with identical inputs
+- **WHEN** the extractor is called twice with identical inputs and the same strategy
 - **THEN** the second call returns the cached skeleton without recomputation
 
-#### Scenario: Prior union-based cache entries are not served
-- **WHEN** a skeleton was previously cached with the `"outline-v1"` suffix
-- **THEN** it is treated as a cache miss and a new concave-hull skeleton is generated
+#### Scenario: Different strategies produce separate cache entries
+- **WHEN** the extractor is called twice with the same SVG but different strategy values
+- **THEN** each call computes and caches its own skeleton independently
 
 ### Requirement: Concavity option
 The extractor SHALL accept a `concavity` parameter in `SvgToSkeletonOptions` that is forwarded to the concave hull extractor. Higher values produce a more convex hull; lower values produce a tighter fit. The default SHALL be 3.0, calibrated against the pilot word set to capture body-scale concavities while smoothing stroke-scale noise.
@@ -76,3 +76,14 @@ The extractor SHALL accept a `concavity` parameter in `SvgToSkeletonOptions` tha
 #### Scenario: Custom concavity overrides default
 - **WHEN** `svgToSkeleton` is called with `concavity: 1.5`
 - **THEN** the concave hull is computed with that value, producing a tighter fit than the default
+
+### Requirement: Contour extraction strategy option
+The extractor SHALL accept a `strategy` parameter in `SvgToSkeletonOptions` with values `'concave-hull'` (default) or `'polygon-union'`. The selected strategy is forwarded to the outline extractor at step 3 of the pipeline.
+
+#### Scenario: Default strategy is concave-hull
+- **WHEN** `svgToSkeleton` is called without a `strategy` option
+- **THEN** the concave hull extractor is used for contour extraction
+
+#### Scenario: Polygon-union strategy selects correct extractor
+- **WHEN** `svgToSkeleton` is called with `strategy: 'polygon-union'`
+- **THEN** the polygon-union extractor is used and the resulting contour reflects merged subpath boundaries

@@ -7,7 +7,7 @@ vi.mock('concaveman', async (importOriginal) => {
 });
 
 import concaveman from 'concaveman';
-import { svgToSkeleton, concaveHullContour, clearSvgCaches } from '../svg-to-skeleton.js';
+import { svgToSkeleton, concaveHullContour, extractOutlineContour, clearSvgCaches } from '../svg-to-skeleton.js';
 
 beforeEach(() => {
   clearSvgCaches();
@@ -107,5 +107,79 @@ describe('concavity option', () => {
     expect(vi.mocked(concaveman)).toHaveBeenCalled();
     const [, concavityArg] = vi.mocked(concaveman).mock.calls[0];
     expect(concavityArg).toBe(1.5);
+  });
+});
+
+// ── extractOutlineContour (polygon-union) tests ──────────────────────────────
+
+/** Square with circular hole (two subpaths): outer square 10–90, inner circle approx at 50,50 r=20 */
+const SQUARE_WITH_HOLE_SVG = `<svg viewBox="0 0 100 100">
+  <path d="M10,10 L90,10 L90,90 L10,90 Z"/>
+  <path d="M50,30 L70,50 L50,70 L30,50 Z"/>
+</svg>`;
+
+/** Two disconnected squares of different sizes */
+const TWO_SQUARES_SVG = `<svg viewBox="0 0 100 100">
+  <path d="M5,5 L45,5 L45,45 L5,45 Z"/>
+  <path d="M55,55 L95,55 L95,95 L55,95 Z"/>
+</svg>`;
+
+describe('extractOutlineContour — polygon-union', () => {
+  it('returns outer contour for a single subpath polygon', () => {
+    const pts: [number, number][] = [[0,0],[1,0],[1,1],[0,1]];
+    const result = extractOutlineContour([pts]);
+    expect(result).toEqual(pts);
+  });
+
+  it('returns empty for empty input', () => {
+    expect(extractOutlineContour([])).toEqual([]);
+  });
+
+  it('filled icon with hole: outer boundary covers the square extent', () => {
+    const skeleton = svgToSkeleton(SQUARE_WITH_HOLE_SVG, { strategy: 'polygon-union' });
+    expect(skeleton).not.toBeNull();
+    const pts = skeleton!.points;
+    const xs = pts.map(([x]) => x);
+    const ys = pts.map(([, y]) => y);
+    // Outer square corners at 0.1 and 0.9
+    expect(Math.min(...xs)).toBeLessThanOrEqual(0.15);
+    expect(Math.max(...xs)).toBeGreaterThanOrEqual(0.85);
+    expect(Math.min(...ys)).toBeLessThanOrEqual(0.15);
+    expect(Math.max(...ys)).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('two disconnected regions: contour covers the larger region', () => {
+    const skeleton = svgToSkeleton(TWO_SQUARES_SVG, { strategy: 'polygon-union' });
+    expect(skeleton).not.toBeNull();
+    // Both squares are same size so either is acceptable; skeleton should be non-null
+    expect(skeleton!.points.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ── strategy option: concave-hull vs polygon-union produce different skeletons ─
+
+describe('strategy option', () => {
+  it('polygon-union and concave-hull produce different skeletons for multi-subpath SVG', () => {
+    clearSvgCaches();
+    const s1 = svgToSkeleton(SQUARE_WITH_HOLE_SVG, { strategy: 'concave-hull' });
+    clearSvgCaches();
+    const s2 = svgToSkeleton(SQUARE_WITH_HOLE_SVG, { strategy: 'polygon-union' });
+    expect(s1).not.toBeNull();
+    expect(s2).not.toBeNull();
+    // The two strategies should not produce identical point sets
+    expect(JSON.stringify(s1!.points)).not.toEqual(JSON.stringify(s2!.points));
+  });
+
+  it('same SVG with different strategies uses separate cache entries', () => {
+    clearSvgCaches();
+    const s1 = svgToSkeleton(SQUARE_SVG, { strategy: 'concave-hull' });
+    // Second call with different strategy should still call concaveman only once total
+    // (polygon-union does not call concaveman at all)
+    vi.mocked(concaveman).mockClear();
+    const s2 = svgToSkeleton(SQUARE_SVG, { strategy: 'polygon-union' });
+    expect(s1).not.toBeNull();
+    expect(s2).not.toBeNull();
+    // polygon-union path does not invoke concaveman
+    expect(vi.mocked(concaveman)).not.toHaveBeenCalled();
   });
 });

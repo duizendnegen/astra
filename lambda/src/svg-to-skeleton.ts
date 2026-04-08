@@ -16,6 +16,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import concaveman from 'concaveman';
+import polygonClipping from 'polygon-clipping';
 import type { Skeleton } from './core.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ export interface SvgToSkeletonOptions {
   targetMax?: number;        // Max points (default 40)
   diskCacheDir?: string;     // Optional disk cache directory for dev
   concavity?: number;        // Concave hull concavity (default 3.0; higher = more convex)
+  strategy?: 'concave-hull' | 'polygon-union';  // Contour extraction strategy (default: 'concave-hull')
 }
 
 interface SampledPath {
@@ -296,6 +298,47 @@ export function concaveHullContour(points: Point[], concavity: number): Point[] 
   return ring;
 }
 
+// ── Polygon-union contour extraction ─────────────────────────────────────────
+
+function polygonArea(ring: Point[]): number {
+  let area = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    area += ring[j][0] * ring[i][1];
+    area -= ring[i][0] * ring[j][1];
+  }
+  return Math.abs(area) / 2;
+}
+
+/** Compute the boolean union of all subpath polygons and return the outer
+ *  boundary of the largest resulting region. Falls back to concatenated
+ *  points on error. */
+export function extractOutlineContour(subpathPolygons: Point[][]): Point[] {
+  if (subpathPolygons.length === 0) return [];
+  if (subpathPolygons.length === 1) return subpathPolygons[0];
+
+  try {
+    const multiPolygons: polygonClipping.MultiPolygon[] = subpathPolygons.map(
+      (pts) => [[[...pts.map(([x, y]) => [x, y] as [number, number])]]],
+    );
+    const [first, ...rest] = multiPolygons;
+    const result = polygonClipping.union(first, ...rest);
+    if (!result || result.length === 0) throw new Error('empty union');
+
+    let best: Point[] = [];
+    let bestArea = -1;
+    for (const poly of result) {
+      const outer = poly[0];
+      const pts = outer.map(([x, y]) => [x, y] as Point);
+      const area = polygonArea(pts);
+      if (area > bestArea) { bestArea = area; best = pts; }
+    }
+    return best;
+  } catch {
+    console.warn('[svg-to-skeleton] polygon union failed, falling back to concatenated points');
+    return subpathPolygons.flat();
+  }
+}
+
 // ── ViewBox normalisation ─────────────────────────────────────────────────────
 
 function extractViewBox(svg: string): [number, number, number, number] | null {
@@ -479,10 +522,11 @@ export function svgToSkeleton(
     targetMax = 40,
     diskCacheDir,
     concavity = 3.0,
+    strategy = 'concave-hull',
   } = opts;
 
   const hash = svgHash(svgOrPath);
-  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__${concavity}__outline-v2`;
+  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__${strategy}__${concavity}__outline-v3`;
 
   // Check skeleton cache
   if (skeletonCache.has(skelKey)) return skeletonCache.get(skelKey)!;
@@ -523,8 +567,10 @@ export function svgToSkeleton(
 
   const normSubpaths = sampled.subpaths.map((pts) => normalisePoints(pts, vb!));
 
-  // Step 3: extract outer boundary contour via concave hull
-  const contour = concaveHullContour(normSubpaths.flat(), concavity);
+  // Step 3: extract outer boundary contour
+  const contour = strategy === 'polygon-union'
+    ? extractOutlineContour(normSubpaths)
+    : concaveHullContour(normSubpaths.flat(), concavity);
   if (contour.length === 0) return null;
 
   // Step 4: simplify

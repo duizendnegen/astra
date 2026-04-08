@@ -277,7 +277,7 @@ const SIMPLIFIERS: Record<string, SimplifyFn> = {
   visvalingam: visvalingamWhyatt,
 };
 
-export function svgToSkeletonWithOpts(svgOrPath: string): Skeleton | null {
+export function svgToSkeletonWithOpts(svgOrPath: string, source?: string): Skeleton | null {
   const algorithmName = process.env.SIMPLIFY_ALGORITHM ?? 'rdp';
   const simplifyFn = SIMPLIFIERS[algorithmName] ?? rdpSimplify;
   const epsilon = parseFloat(process.env.SIMPLIFY_EPSILON ?? '0.02');
@@ -287,6 +287,7 @@ export function svgToSkeletonWithOpts(svgOrPath: string): Skeleton | null {
     algorithmName,
     epsilon,
     diskCacheDir: L5_DISK_CACHE,
+    strategy: source === 'phosphor' ? 'polygon-union' : 'concave-hull',
   });
 }
 
@@ -311,7 +312,7 @@ export async function retrieveSkeleton(
     const best = bestAboveThreshold(results);
     if (best) {
       log.info({ id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
-      const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
+      const skeleton = svgToSkeletonWithOpts(best.entry.svg_path, best.entry.source);
       if (skeleton) {
         log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
         return {
@@ -378,7 +379,7 @@ export async function retrieveSkeleton(
         const best = bestAboveThreshold(results);
         if (best) {
           log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
-          const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
+          const skeleton = svgToSkeletonWithOpts(best.entry.svg_path, best.entry.source);
           if (skeleton) {
             clearTimeout(timer);
             l4Controller.abort();
