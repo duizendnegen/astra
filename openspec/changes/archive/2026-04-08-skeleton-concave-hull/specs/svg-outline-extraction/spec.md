@@ -1,3 +1,17 @@
+## REMOVED Requirements
+
+### Requirement: Boolean union of subpath polygons
+**Reason**: Boolean union of disconnected subpath polygons fails for line-art SVGs (e.g. vtracer output), where each stroke is a separate thin polygon that never merges with neighbours. The union produces hundreds of disjoint regions rather than a single silhouette. Replaced by concave hull.
+**Migration**: Callers pass the full flat point cloud to the new concave hull extractor instead of per-subpath polygon rings.
+
+### Requirement: Outer boundary extraction
+**Reason**: Selecting the largest polygon from the union result silently discards all regions except the densest stroke cluster, producing skeletons that cover only a fraction of the original shape. Removed with the union step.
+**Migration**: The concave hull extractor returns a single contour directly; no largest-polygon selection is needed.
+
+### Requirement: Fallback on union error
+**Reason**: The union step is removed; there is no union operation to fail.
+**Migration**: The concave hull extractor is robust to sparse and disconnected point clouds and does not require a fallback.
+
 ## ADDED Requirements
 
 ### Requirement: Concave hull contour extraction

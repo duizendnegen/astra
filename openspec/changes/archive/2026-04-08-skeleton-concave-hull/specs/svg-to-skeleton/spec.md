@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: SVG path parsing and normalisation
 The SVG → skeleton extractor SHALL parse all `<path>` elements from an SVG string, resolve any `transform` attributes, and normalise all coordinates to a 0–1 space using the SVG's `viewBox` (or bounding box if no viewBox is present).
@@ -10,28 +10,6 @@ The SVG → skeleton extractor SHALL parse all `<path>` elements from an SVG str
 #### Scenario: Multiple path elements flattened to a single point cloud
 - **WHEN** an SVG contains multiple `<path>` elements or a path with multiple subpaths
 - **THEN** all sampled points from all subpaths are normalised and merged into a single flat point cloud before contour extraction
-
-### Requirement: Curvature-weighted point sampling
-The extractor SHALL sample points along each path at intervals proportional to local curvature: more densely around curves and corners, more sparsely along straight segments. The sampling SHALL produce a dense intermediate point cloud (100–500 points) before thinning.
-
-#### Scenario: Curve receives more samples than straight
-- **WHEN** a path contains a Bezier curve adjacent to a straight segment
-- **THEN** the curve segment has proportionally more sampled points per unit length
-
-### Requirement: Swappable simplification algorithm
-The extractor SHALL expose a simplification strategy parameter. The default algorithm SHALL be Ramer-Douglas-Peucker (RDP) with a tunable epsilon. Additional algorithms (e.g. Visvalingam-Whyatt) SHALL be registerable by passing an alternative strategy function. The simplification SHALL target a 15–40 point output, adjusting epsilon automatically if the initial pass produces fewer than 15 or more than 40 points.
-
-#### Scenario: Default RDP produces 15–40 points
-- **WHEN** L5 runs with default settings on a typical Phosphor icon SVG
-- **THEN** the output skeleton has between 15 and 40 points
-
-#### Scenario: Alternative algorithm can be substituted
-- **WHEN** `simplify: visvalingamWhyatt` is passed as the strategy
-- **THEN** the extractor uses Visvalingam-Whyatt instead of RDP
-
-#### Scenario: Auto-adjust epsilon when point count out of range
-- **WHEN** initial RDP produces fewer than 15 points
-- **THEN** epsilon is reduced and RDP is retried until at least 15 points are produced (or a minimum epsilon floor is reached)
 
 ### Requirement: Edge derivation from path continuity
 The extractor SHALL derive edges by connecting adjacent points along the extracted outer boundary contour. Since the concave hull extraction produces a single closed contour, edges SHALL connect consecutive points `[i, i+1]` for all points, with an additional closing edge from the last point back to the first.
@@ -65,6 +43,8 @@ Cached results SHALL be stored in memory within a single Lambda invocation. A pe
 #### Scenario: Prior union-based cache entries are not served
 - **WHEN** a skeleton was previously cached with the `"outline-v1"` suffix
 - **THEN** it is treated as a cache miss and a new concave-hull skeleton is generated
+
+## ADDED Requirements
 
 ### Requirement: Concavity option
 The extractor SHALL accept a `concavity` parameter in `SvgToSkeletonOptions` that is forwarded to the concave hull extractor. Higher values produce a more convex hull; lower values produce a tighter fit. The default SHALL be 3.0, calibrated against the pilot word set to capture body-scale concavities while smoothing stroke-scale noise.
