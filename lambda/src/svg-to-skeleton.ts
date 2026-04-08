@@ -521,7 +521,7 @@ export function svgToSkeleton(
     targetMin = 15,
     targetMax = 40,
     diskCacheDir,
-    concavity = 3.0,
+    concavity = 1.5,
     strategy = 'concave-hull',
   } = opts;
 

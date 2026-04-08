@@ -18,7 +18,9 @@
       "Bash(python:*)",
       "Bash(npx tsc:*)",
       "Bash(docker compose:*)",
-      "Bash(curl -s http://localhost:3001/)"
+      "Bash(curl -s http://localhost:3001/)",
+      "Bash(openspec status:*)",
+      "Bash(openspec instructions:*)"
     ]
   }
 }

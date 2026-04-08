@@ -1,0 +1,32 @@
+{
+  "name": "astra-custom-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "tsx setup.ts",
+    "generate": "tsx 01-generate-pngs.ts",
+    "trace": "tsx 02-trace-svgs.ts",
+    "vet": "tsx 03-vet-server.ts",
+    "ingest": "tsx 04-ingest.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "express": "^4.21.2",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "sqlite-vec": "^0.1.6",
+    "sqlite-vec-windows-x64": "^0.1.9"
+  },
+  "devDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.60.1",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/express": "^5.0.1",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^2.1.9"
+  }
+}

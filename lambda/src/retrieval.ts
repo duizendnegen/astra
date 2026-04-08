@@ -22,6 +22,14 @@ const log = createLogger('retrieval');
 
 export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.80');
 export const THRESHOLD_PHYLOPIC = parseFloat(process.env.THRESHOLD_PHYLOPIC ?? '0.55');
+export const THRESHOLD_CUSTOM = parseFloat(process.env.THRESHOLD_CUSTOM ?? '0.85');
+
+// Sources to query in L1. Comma-separated; default includes phosphor and custom.
+// Set L1_SOURCES=phosphor to restore pre-custom behaviour exactly.
+const L1_SOURCES: string[] = (process.env.L1_SOURCES ?? 'phosphor,custom')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const EMBED_MODEL = 'openai/text-embedding-3-small';
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
@@ -36,7 +44,7 @@ const L5_DISK_CACHE = process.env.NODE_ENV !== 'production'
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface MatchProvenance {
-  source: 'phosphor' | 'phylopic' | 'llm';
+  source: 'phosphor' | 'phylopic' | 'custom' | 'llm';
   id: string;
   similarity: number;
   layer: 1 | 3 | 4;
@@ -150,27 +158,26 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return denom < 1e-10 ? 0 : dot / denom;
 }
 
-// Pre-compiled statement cached at module level for efficiency
+// Pre-compiled statement cached at module level for efficiency.
+// Invalidated when L1_SOURCES changes (static at module load, so no invalidation needed).
 let _searchStmt: ReturnType<Database.Database['prepare']> | null = null;
 function getSearchStmt(db: Database.Database) {
   if (!_searchStmt) {
-    // Phosphor-only search for now. Phylopic SVGs are filled silhouettes that produce
-    // poor skeletons with the current L5 extractor (designed for stroke-based icons).
-    // Re-enable Phylopic once L5 handles filled paths (stroke extraction / contour tracing).
-    // vec_distance_cosine() returns L2 distance; sort ascending in JS and convert to similarity.
+    // Build WHERE clause from L1_SOURCES. Source names are validated as alphanumeric
+    // at parse time so interpolation is safe (no SQL injection risk).
+    // vec_distance_cosine() returns L2 distance; sorted ascending in JS then converted to similarity.
     //
-    // Note: vec0 ANN (MATCH) was investigated but the single shared index (phosphor ~1512 +
-    // phylopic ~5000) causes corpus-mixing — top-k from the full index is dominated by phylopic
-    // entries, so the best phosphor match often falls outside top-20 (even top-200). A separate
-    // phosphor_vectors table would solve this but requires a schema migration. Full-scan is
-    // acceptable here: L1 is only on the critical path for hits, and L3/L4 now run in parallel
-    // so the miss-path latency is no longer dominated by L1. See l1-ann-investigation.md.
+    // Note: vec0 ANN (MATCH) was investigated but corpus-mixing across sources caused issues.
+    // Full-scan is acceptable: L1 is only on the critical path for hits, and L3/L4 run in parallel.
+    // See l1-ann-investigation.md.
+    const validSources = L1_SOURCES.filter((s) => /^[a-z0-9_]+$/i.test(s));
+    const inClause = validSources.map((s) => `'${s}'`).join(', ');
     _searchStmt = db.prepare(`
       SELECT v.id, vec_distance_cosine(v.embedding, vec_f32(:buf)) AS dist,
              e.source, e.label, e.tags, e.svg_path
       FROM vectors v
       JOIN entries e ON e.id = v.id
-      WHERE e.source = 'phosphor'
+      WHERE e.source IN (${inClause})
     `);
   }
   return _searchStmt;
@@ -195,7 +202,9 @@ function searchIndex(db: Database.Database, queryVec: Float32Array, topK = 5): S
 }
 
 function thresholdFor(source: string): number {
-  return source === 'phosphor' ? THRESHOLD_PHOSPHOR : THRESHOLD_PHYLOPIC;
+  if (source === 'phosphor') return THRESHOLD_PHOSPHOR;
+  if (source === 'custom') return THRESHOLD_CUSTOM;
+  return THRESHOLD_PHYLOPIC;
 }
 
 function bestAboveThreshold(results: SearchResult[]): SearchResult | null {
@@ -317,7 +326,7 @@ export async function retrieveSkeleton(
         log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
         return {
           match: {
-            source: best.entry.source as 'phosphor' | 'phylopic',
+            source: best.entry.source as 'phosphor' | 'phylopic' | 'custom',
             id: best.entry.id,
             similarity: best.similarity,
             layer: 1,
@@ -384,7 +393,7 @@ export async function retrieveSkeleton(
             clearTimeout(timer);
             l4Controller.abort();
             return {
-              match: { source: best.entry.source as 'phosphor' | 'phylopic', id: best.entry.id, similarity: best.similarity, layer: 3, svgPath: best.entry.svg_path },
+              match: { source: best.entry.source as 'phosphor' | 'phylopic' | 'custom', id: best.entry.id, similarity: best.similarity, layer: 3, svgPath: best.entry.svg_path },
               skeletons: [skeleton],
             };
           }

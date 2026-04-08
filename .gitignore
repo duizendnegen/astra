@@ -21,6 +21,9 @@ data/l5-cache/
 *.json.gz
 .playwright-mcp/
 
+# Custom pipeline downloaded binaries
+scripts/custom-pipeline/bin/
+
 # Test harness reports (fixtures are committed; generated reports are not)
 test-harness/reports/
 
