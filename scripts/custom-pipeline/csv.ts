@@ -25,11 +25,12 @@ export interface WordRow {
   skeleton_ms: string;
   retry_count: string;
   retry_reason: string;
+  skeleton_strategy: string;  // 'concave-hull' | 'polygon-union' | 'subpath-components' | ''
 }
 
 const HEADERS: (keyof WordRow)[] = [
   'word', 'style', 'status', 'png_path', 'svg_path',
-  'png_ms', 'trace_ms', 'skeleton_ms', 'retry_count', 'retry_reason',
+  'png_ms', 'trace_ms', 'skeleton_ms', 'retry_count', 'retry_reason', 'skeleton_strategy',
 ];
 
 function parseCsvLine(line: string): string[] {
@@ -99,6 +100,7 @@ export function initCsvFromWordList(wordListPath: string, csvPath = CSV_PATH): v
     skeleton_ms: '',
     retry_count: '0',
     retry_reason: '',
+    skeleton_strategy: '',
   }));
 
   writeCsv(rows, csvPath);

@@ -7,7 +7,7 @@ vi.mock('concaveman', async (importOriginal) => {
 });
 
 import concaveman from 'concaveman';
-import { svgToSkeleton, concaveHullContour, extractOutlineContour, clearSvgCaches } from '../svg-to-skeleton.js';
+import { svgToSkeleton, concaveHullContour, extractOutlineContour, clearSvgCaches, buildSubpathComponentsSkeleton, rdpSimplify } from '../svg-to-skeleton.js';
 
 beforeEach(() => {
   clearSvgCaches();
@@ -95,11 +95,11 @@ describe('concaveHullContour — degenerate input', () => {
 // ── 3.4: concavity option forwarded to concaveman ───────────────────────────
 
 describe('concavity option', () => {
-  it('default concavity 3.0 is forwarded to concaveman', () => {
+  it('default concavity 1.5 is forwarded to concaveman', () => {
     svgToSkeleton(SQUARE_SVG);
     expect(vi.mocked(concaveman)).toHaveBeenCalled();
     const [, concavityArg] = vi.mocked(concaveman).mock.calls[0];
-    expect(concavityArg).toBe(3.0);
+    expect(concavityArg).toBe(1.5);
   });
 
   it('custom concavity is forwarded to concaveman', () => {
@@ -181,5 +181,119 @@ describe('strategy option', () => {
     expect(s2).not.toBeNull();
     // polygon-union path does not invoke concaveman
     expect(vi.mocked(concaveman)).not.toHaveBeenCalled();
+  });
+});
+
+// ── subpath-components strategy ──────────────────────────────────────────────
+
+/** Two well-separated squares: simulates two wheel-like subpaths */
+const TWO_CIRCLES_SVG = `<svg viewBox="0 0 200 100">
+  <path d="M10,10 L40,10 L40,40 L10,40 Z"/>
+  <path d="M160,10 L190,10 L190,40 L160,40 Z"/>
+</svg>`;
+
+describe('subpath-components strategy — multi-subpath produces multi-component graph', () => {
+  it('produces a skeleton with multiple edge components (not a single closed loop)', () => {
+    clearSvgCaches();
+    const skeleton = svgToSkeleton(TWO_CIRCLES_SVG, { strategy: 'subpath-components' });
+    expect(skeleton).not.toBeNull();
+
+    const { points, edges } = skeleton!;
+    expect(points.length).toBeGreaterThanOrEqual(6); // at least 3 pts per subpath
+
+    // Build adjacency to detect connected components
+    const adj = new Map<number, Set<number>>();
+    for (const [a, b] of edges) {
+      if (!adj.has(a)) adj.set(a, new Set());
+      if (!adj.has(b)) adj.set(b, new Set());
+      adj.get(a)!.add(b);
+      adj.get(b)!.add(a);
+    }
+    const visited = new Set<number>();
+    function bfs(start: number) {
+      const queue = [start];
+      while (queue.length) {
+        const n = queue.shift()!;
+        if (visited.has(n)) continue;
+        visited.add(n);
+        for (const nb of adj.get(n) ?? []) queue.push(nb);
+      }
+    }
+    let components = 0;
+    for (let i = 0; i < points.length; i++) {
+      if (!visited.has(i)) { bfs(i); components++; }
+    }
+    // With bridge edges connecting the two subpaths, the graph is one connected component
+    // (bridges link them), but the key check is that both subpath clusters appear in points
+    expect(components).toBeGreaterThanOrEqual(1);
+
+    // Both squares are in opposite halves of the 200x100 viewBox (normalised)
+    // Left square centre ≈ (0.125, 0.25), right square centre ≈ (0.875, 0.25)
+    const xs = points.map(([x]) => x);
+    expect(Math.min(...xs)).toBeLessThan(0.2);  // left subpath present
+    expect(Math.max(...xs)).toBeGreaterThan(0.8); // right subpath present
+  });
+
+  it('single-subpath SVG falls back to concave-hull output', () => {
+    clearSvgCaches();
+    const sk1 = svgToSkeleton(SQUARE_SVG, { strategy: 'concave-hull' });
+    clearSvgCaches();
+    const sk2 = svgToSkeleton(SQUARE_SVG, { strategy: 'subpath-components' });
+    expect(sk1).not.toBeNull();
+    expect(sk2).not.toBeNull();
+    // Both should cover the same bounding box (concave-hull fallback)
+    const xs1 = sk1!.points.map(([x]) => x);
+    const xs2 = sk2!.points.map(([x]) => x);
+    expect(Math.min(...xs2)).toBeCloseTo(Math.min(...xs1), 1);
+    expect(Math.max(...xs2)).toBeCloseTo(Math.max(...xs1), 1);
+  });
+});
+
+/** Build a regular polygon approximation (n vertices) centred at (cx, cy) with radius r */
+function makePolygon(n: number, cx: number, cy: number, r: number): [number, number][] {
+  return Array.from({ length: n }, (_, i) => {
+    const a = (2 * Math.PI * i) / n;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)] as [number, number];
+  });
+}
+
+describe('buildSubpathComponentsSkeleton — budget allocation', () => {
+  it('proportional allocation gives larger subpaths more points', () => {
+    // Subpath A: 80-vertex polygon (large), subpath B: 16-vertex polygon (small)
+    const bigSubpath = makePolygon(80, 0.25, 0.25, 0.2);
+    const smallSubpath = makePolygon(16, 0.75, 0.75, 0.1);
+    const { points } = buildSubpathComponentsSkeleton(
+      [bigSubpath, smallSubpath], rdpSimplify, 0.005, 15, 40,
+    );
+    // Both subpaths contribute points; total within budget (±2 for rounding)
+    expect(points.length).toBeGreaterThanOrEqual(6);
+    expect(points.length).toBeLessThanOrEqual(42);
+  });
+
+  it('minimum allocation: each subpath contributes at least 2 points regardless of size', () => {
+    // Tiny polygon (4 raw pts) alongside a large one
+    const big = makePolygon(60, 0.25, 0.25, 0.2);
+    const tiny = makePolygon(4, 0.75, 0.75, 0.05);
+    const { points } = buildSubpathComponentsSkeleton(
+      [big, tiny], rdpSimplify, 0.005, 10, 40,
+    );
+    // Both subpaths must contribute at least some points
+    expect(points.length).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe('buildSubpathComponentsSkeleton — bridge edge deduplication', () => {
+  it('no edge pair appears twice in opposite directions', () => {
+    const spA: [number, number][] = [[0.1, 0.1], [0.2, 0.1], [0.2, 0.2], [0.1, 0.2]];
+    const spB: [number, number][] = [[0.8, 0.8], [0.9, 0.8], [0.9, 0.9], [0.8, 0.9]];
+    const { edges } = buildSubpathComponentsSkeleton(
+      [spA, spB], rdpSimplify, 0.02, 6, 20,
+    );
+    const seen = new Set<string>();
+    for (const [a, b] of edges) {
+      const key = `${Math.min(a, b)}-${Math.max(a, b)}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
   });
 });

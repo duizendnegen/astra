@@ -27,12 +27,23 @@ const log = pino(
   pino.transport({ target: 'pino-pretty', options: { colorize: true } }),
 );
 
+type SkeletonData = { points: [number, number][]; edges: [number, number][] } | null;
+
 interface WordData {
   word: string;
   pngBase64: string;
   svgBase64: string;
-  skeleton: { points: [number, number][]; edges: [number, number][] } | null;
+  skeletons: {
+    concaveHull: SkeletonData;
+    polygonUnion: SkeletonData;
+    subpathComponents: SkeletonData;
+  };
   status: string;
+}
+
+function computeSkeleton(svgContent: string, strategy: 'concave-hull' | 'polygon-union' | 'subpath-components'): SkeletonData {
+  const sk = svgToSkeleton(svgContent, { strategy });
+  return sk ? { points: sk.points as [number, number][], edges: sk.edges as [number, number][] } : null;
 }
 
 // Pre-compute all skeleton previews at server startup and cache in memory
@@ -43,7 +54,7 @@ function buildWordCache(rows: WordRow[]): WordData[] {
   return proposed.map((row) => {
     let pngBase64 = '';
     let svgBase64 = '';
-    let skeleton: WordData['skeleton'] = null;
+    const skeletons: WordData['skeletons'] = { concaveHull: null, polygonUnion: null, subpathComponents: null };
 
     if (row.png_path && existsSync(row.png_path)) {
       pngBase64 = readFileSync(row.png_path).toString('base64');
@@ -53,18 +64,21 @@ function buildWordCache(rows: WordRow[]): WordData[] {
       const svgContent = readFileSync(row.svg_path, 'utf-8');
       svgBase64 = Buffer.from(svgContent).toString('base64');
 
-      try {
-        const sk = svgToSkeleton(svgContent);
-        if (sk) {
-          skeleton = { points: sk.points as [number, number][], edges: sk.edges as [number, number][] };
+      for (const [key, strategy] of [
+        ['concaveHull', 'concave-hull'],
+        ['polygonUnion', 'polygon-union'],
+        ['subpathComponents', 'subpath-components'],
+      ] as const) {
+        try {
+          skeletons[key] = computeSkeleton(svgContent, strategy);
+        } catch (err) {
+          log.warn({ word: row.word, strategy, err: String(err) }, 'Skeleton computation failed');
         }
-      } catch (err) {
-        log.warn({ word: row.word, err: String(err) }, 'Skeleton computation failed');
       }
     }
 
-    log.debug({ word: row.word, hasPng: !!pngBase64, hasSvg: !!svgBase64, hasSkeleton: !!skeleton }, 'Word cached');
-    return { word: row.word, pngBase64, svgBase64, skeleton, status: row.status };
+    log.debug({ word: row.word, hasPng: !!pngBase64, hasSvg: !!svgBase64 }, 'Word cached');
+    return { word: row.word, pngBase64, svgBase64, skeletons, status: row.status };
   });
 }
 
@@ -79,13 +93,16 @@ const HTML_PAGE = `<!DOCTYPE html>
     #app { display: flex; flex-direction: column; align-items: center; padding: 24px; }
     h1 { font-size: 1.2rem; margin-bottom: 8px; color: #aaa; }
     #counter { font-size: 0.9rem; color: #666; margin-bottom: 20px; }
-    #card { background: #1e1e1e; border-radius: 12px; padding: 24px; width: 100%; max-width: 900px; }
+    #card { background: #1e1e1e; border-radius: 12px; padding: 24px; width: 100%; max-width: 1200px; }
     #word-title { font-size: 2rem; font-weight: bold; margin-bottom: 16px; text-align: center; }
     #panels { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
     .panel { display: flex; flex-direction: column; align-items: center; gap: 8px; }
     .panel label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.08em; }
-    .panel img { width: 220px; height: 220px; object-fit: contain; background: white; border-radius: 6px; }
-    canvas { background: #0a0a0a; border-radius: 6px; }
+    .panel img { width: 200px; height: 200px; object-fit: contain; background: white; border-radius: 6px; }
+    canvas { background: #0a0a0a; border-radius: 6px; border: 2px solid transparent; transition: border-color 0.15s; }
+    canvas.selected { border-color: #facc15; }
+    canvas.dimmed { opacity: 0.4; }
+    .skeleton-key { font-size: 0.7rem; color: #666; margin-top: 2px; }
     #status-bar { display: flex; gap: 12px; justify-content: center; margin-top: 20px; align-items: center; }
     .btn { padding: 10px 28px; border-radius: 8px; border: none; cursor: pointer; font-size: 1rem; font-weight: 600; }
     .btn-accept { background: #22c55e; color: white; }
@@ -114,6 +131,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     #completion h2 { font-size: 2rem; margin-bottom: 12px; color: #22c55e; }
     #completion p  { color: #888; }
     #shortcuts { font-size: 0.75rem; color: #555; margin-top: 12px; text-align: center; }
+    #strategy-hint { font-size: 0.8rem; color: #ef4444; text-align: center; margin-top: 6px; min-height: 1.2em; }
   </style>
 </head>
 <body>
@@ -133,10 +151,22 @@ const HTML_PAGE = `<!DOCTYPE html>
         <img id="svg-img" src="" alt="SVG" />
       </div>
       <div class="panel">
-        <label>Skeleton</label>
-        <canvas id="skeleton-canvas" width="220" height="220"></canvas>
+        <label>1 — Concave Hull</label>
+        <canvas id="canvas-concave-hull" width="200" height="200" data-strategy="concave-hull"></canvas>
+        <span class="skeleton-key">concave-hull</span>
+      </div>
+      <div class="panel">
+        <label>2 — Polygon Union</label>
+        <canvas id="canvas-polygon-union" width="200" height="200" data-strategy="polygon-union"></canvas>
+        <span class="skeleton-key">polygon-union</span>
+      </div>
+      <div class="panel">
+        <label>3 — Subpath Components</label>
+        <canvas id="canvas-subpath-components" width="200" height="200" data-strategy="subpath-components"></canvas>
+        <span class="skeleton-key">subpath-components</span>
       </div>
     </div>
+    <div id="strategy-hint"></div>
     <div id="status-bar">
       <button class="btn btn-nav" id="btn-prev">← Prev</button>
       <button class="btn btn-retry" id="btn-retry">R — Retry</button>
@@ -155,7 +185,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         <button id="reason-submit">Retry ↵</button>
       </div>
     </div>
-    <div id="shortcuts">Shortcuts: A accept · R retry (opens reason picker) · ← → navigate · G jump to word</div>
+    <div id="shortcuts">Shortcuts: 1/2/3 pick skeleton · A accept · R retry · ← → navigate · G jump to word</div>
   </div>
   <div id="completion" style="display:none">
     <h2>All words vetted!</h2>
@@ -166,6 +196,11 @@ const HTML_PAGE = `<!DOCTYPE html>
 let words = [];
 let decisions = {};
 let idx = 0;
+let selectedStrategy = null; // 'concave-hull' | 'polygon-union' | 'subpath-components' | null
+
+const STRATEGIES = ['concave-hull', 'polygon-union', 'subpath-components'];
+const STRATEGY_KEYS = { 'concave-hull': 'concaveHull', 'polygon-union': 'polygonUnion', 'subpath-components': 'subpathComponents' };
+const CANVAS_IDS = { 'concave-hull': 'canvas-concave-hull', 'polygon-union': 'canvas-polygon-union', 'subpath-components': 'canvas-subpath-components' };
 
 async function load() {
   const res = await fetch('/api/words');
@@ -176,6 +211,52 @@ async function load() {
     return;
   }
   render();
+}
+
+function drawSkeleton(canvas, skeleton) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!skeleton) {
+    ctx.fillStyle = '#555';
+    ctx.font = '13px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('No skeleton', W / 2, H / 2);
+    return;
+  }
+  const pts = skeleton.points;
+  const edges = skeleton.edges;
+  const pad = 10;
+  const size = W - pad * 2;
+  ctx.strokeStyle = '#4ade80';
+  ctx.lineWidth = 1.5;
+  for (const [a, b] of edges) {
+    ctx.beginPath();
+    ctx.moveTo(pad + pts[a][0] * size, pad + pts[a][1] * size);
+    ctx.lineTo(pad + pts[b][0] * size, pad + pts[b][1] * size);
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#facc15';
+  for (const [x, y] of pts) {
+    ctx.beginPath();
+    ctx.arc(pad + x * size, pad + y * size, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function updateStrategyHighlight() {
+  for (const s of STRATEGIES) {
+    const canvas = document.getElementById(CANVAS_IDS[s]);
+    canvas.classList.toggle('selected', s === selectedStrategy);
+    canvas.classList.toggle('dimmed', selectedStrategy !== null && s !== selectedStrategy);
+  }
+}
+
+function selectStrategy(strategy) {
+  // Toggle off if same key pressed twice
+  selectedStrategy = selectedStrategy === strategy ? null : strategy;
+  document.getElementById('strategy-hint').textContent = '';
+  updateStrategyHighlight();
 }
 
 function render() {
@@ -192,38 +273,13 @@ function render() {
     ? \`data:image/svg+xml;base64,\${w.svgBase64}\`
     : '';
 
-  const canvas = document.getElementById('skeleton-canvas');
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 220, 220);
-  if (w.skeleton) {
-    const pts = w.skeleton.points;
-    const edges = w.skeleton.edges;
-    const pad = 10;
-    const size = 200;
-    ctx.strokeStyle = '#4ade80';
-    ctx.lineWidth = 1.5;
-    for (const [a, b] of edges) {
-      const ax = pad + pts[a][0] * size;
-      const ay = pad + pts[a][1] * size;
-      const bx = pad + pts[b][0] * size;
-      const by = pad + pts[b][1] * size;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-    }
-    ctx.fillStyle = '#facc15';
-    for (const [x, y] of pts) {
-      ctx.beginPath();
-      ctx.arc(pad + x * size, pad + y * size, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else {
-    ctx.fillStyle = '#555';
-    ctx.font = '14px system-ui';
-    ctx.textAlign = 'center';
-    ctx.fillText('No skeleton', 110, 110);
+  for (const s of STRATEGIES) {
+    const canvas = document.getElementById(CANVAS_IDS[s]);
+    const skKey = STRATEGY_KEYS[s];
+    drawSkeleton(canvas, w.skeletons?.[skKey] ?? null);
   }
+
+  updateStrategyHighlight();
 
   const badge = document.getElementById('decision-badge');
   const dec = decisions[w.word];
@@ -238,14 +294,28 @@ function render() {
 }
 
 async function decide(decision, reason) {
+  if (decision === 'accepted' && !selectedStrategy) {
+    const hint = document.getElementById('strategy-hint');
+    hint.textContent = 'Pick a skeleton strategy first (keys 1, 2, or 3)';
+    // Flash canvases
+    for (const s of STRATEGIES) {
+      const c = document.getElementById(CANVAS_IDS[s]);
+      c.style.borderColor = '#ef4444';
+      setTimeout(() => { c.style.borderColor = ''; }, 500);
+    }
+    return;
+  }
+
   const word = words[idx].word;
+  const chosenStrategy = selectedStrategy;
   decisions[word] = decision === 'retry' ? ('retry: ' + (reason || '…')) : decision;
+  if (decision === 'accepted') selectedStrategy = null;
   closeReasonPicker();
   render();
   await fetch('/api/decide', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ word, decision, reason }),
+    body: JSON.stringify({ word, decision, reason, skeletonStrategy: decision === 'accepted' ? chosenStrategy : '' }),
   });
   // Auto-advance after accept or retry
   setTimeout(() => navigate(1), 300);
@@ -270,6 +340,8 @@ function closeReasonPicker() {
 
 function navigate(delta) {
   closeReasonPicker();
+  selectedStrategy = null;
+  document.getElementById('strategy-hint').textContent = '';
   idx = Math.max(0, Math.min(words.length - 1, idx + delta));
   render();
 }
@@ -306,7 +378,10 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeReasonPicker(); return; }
   if (picker.classList.contains('visible')) return; // let picker handle input
   if (e.target !== document.body && e.target.tagName !== 'BODY') return;
-  if (e.key === 'a' || e.key === 'A') decide('accepted');
+  if (e.key === '1') selectStrategy('concave-hull');
+  else if (e.key === '2') selectStrategy('polygon-union');
+  else if (e.key === '3') selectStrategy('subpath-components');
+  else if (e.key === 'a' || e.key === 'A') decide('accepted');
   else if (e.key === 'r' || e.key === 'R') openReasonPicker();
   else if (e.key === 'ArrowLeft') navigate(-1);
   else if (e.key === 'ArrowRight') navigate(1);
@@ -376,7 +451,12 @@ async function main(): Promise<void> {
   });
 
   app.post('/api/decide', (req, res) => {
-    const { word, decision, reason } = req.body as { word: string; decision: 'accepted' | 'retry'; reason?: string };
+    const { word, decision, reason, skeletonStrategy } = req.body as {
+      word: string;
+      decision: 'accepted' | 'retry';
+      reason?: string;
+      skeletonStrategy?: string;
+    };
     if (!word || !decision) {
       res.status(400).json({ error: 'word and decision are required' });
       return;
@@ -392,14 +472,16 @@ async function main(): Promise<void> {
     if (decision === 'accepted') {
       row.status = 'accepted';
       row.retry_reason = '';
+      row.skeleton_strategy = skeletonStrategy ?? '';
     } else if (decision === 'retry') {
       row.status = 'retry';
       row.retry_count = String(parseInt(row.retry_count || '0', 10) + 1);
       row.retry_reason = reason ?? '';
+      row.skeleton_strategy = '';
     }
 
     writeCsv(currentRows);
-    log.info({ word, decision, reason }, 'Decision recorded');
+    log.info({ word, decision, reason, skeletonStrategy }, 'Decision recorded');
     res.json({ ok: true });
   });
 
