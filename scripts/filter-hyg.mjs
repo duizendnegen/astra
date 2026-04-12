@@ -17,7 +17,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hyg_v30.csv';
+  'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/CURRENT/hygdata_v41.csv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUTPUT = join(__dirname, '../frontend/public/data/stars.json');
@@ -38,7 +38,7 @@ let headers = null;
 
 for await (const line of rl) {
   if (!headers) {
-    headers = line.split(',');
+    headers = line.split(',').map(h => h.replace(/^"|"$/g, ''));
     continue;
   }
   const cols = line.split(',');
