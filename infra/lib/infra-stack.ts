@@ -112,12 +112,20 @@ export class InfraStack extends cdk.Stack {
         forceDockerBundling: true,
         externalModules: ['@aws-sdk/*', '@smithy/*'],
         nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
+        commandHooks: {
+          beforeBundling: () => [],
+          beforeInstall: () => [],
+          afterBundling: (inputDir, outputDir) => [
+            `cp ${inputDir}/frontend/public/data/stars.json ${outputDir}/stars.json`,
+          ],
+        },
       },
       environment: {
         TABLE_NAME: skeletonTable.tableName,
         OPENROUTER_API_KEY_PARAM: '/astra/openrouter-api-key',
         PINECONE_API_KEY_PARAM: '/astra/pinecone-api-key',
         ICONS_BUCKET_NAME: iconsBucket.bucketName,
+        STARS_PATH: '/var/task/stars.json',
       },
     });
 
