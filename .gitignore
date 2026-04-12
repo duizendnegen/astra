@@ -17,6 +17,8 @@ out/
 data/
 !data/.gitkeep
 data/l5-cache/
+# Frontend static data assets are small enough to track
+!frontend/public/data/
 *.csv
 *.json.gz
 .playwright-mcp/
