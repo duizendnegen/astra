@@ -3,25 +3,29 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { retrieveSkeleton, type MatchProvenance } from './retrieval.js';
+import { match } from './matcher.js';
+import { getCatalogue } from './catalogue.js';
 import type { Skeleton } from './core.js';
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const ssmClient = new SSMClient({});
+const ssmClient = new SSMClient({ region: process.env.AWS_REGION ?? 'eu-central-1' });
 
 const TABLE_NAME = process.env.TABLE_NAME!;
-const API_KEY_PARAM = process.env.OPENROUTER_API_KEY_PARAM!;
+
+let _openRouterKey: string | undefined;
+async function getOpenRouterKey(): Promise<string> {
+  if (_openRouterKey) return _openRouterKey;
+  if (process.env.OPENROUTER_API_KEY) return (_openRouterKey = process.env.OPENROUTER_API_KEY);
+  const res = await ssmClient.send(
+    new GetParameterCommand({ Name: process.env.OPENROUTER_API_KEY_PARAM!, WithDecryption: true }),
+  );
+  return (_openRouterKey = res.Parameter?.Value ?? '');
+}
 
 interface CacheItem {
   word: string;
   match?: MatchProvenance | null;
   skeletons: Skeleton[];
-}
-
-async function getApiKey(): Promise<string> {
-  const res = await ssmClient.send(
-    new GetParameterCommand({ Name: API_KEY_PARAM, WithDecryption: true }),
-  );
-  return res.Parameter?.Value ?? '';
 }
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
@@ -31,36 +35,69 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   };
 
   let word: string;
+  let excludeSeeds: number[] = [];
   try {
-    const body = JSON.parse(event.body ?? '{}') as { word?: unknown };
+    const body = JSON.parse(event.body ?? '{}') as { word?: unknown; excludeSeeds?: unknown };
     if (typeof body.word !== 'string' || !body.word.trim()) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'word is required' }) };
     }
     word = body.word.trim().toLowerCase();
+    if (Array.isArray(body.excludeSeeds)) {
+      excludeSeeds = (body.excludeSeeds as unknown[]).filter((x): x is number => typeof x === 'number');
+    }
   } catch {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid JSON body' }) };
   }
 
-  // Cache read — treat legacy entries (no match field) as misses
-  const cached = await dynamo.send(new GetCommand({ TableName: TABLE_NAME, Key: { word } }));
-  const item = cached.Item as CacheItem | undefined;
-  if (item?.skeletons) {
-    return { statusCode: 200, headers, body: JSON.stringify({ skeletons: item.skeletons }) };
+  const catalogue = getCatalogue();
+  const excludeSet = new Set<number>(excludeSeeds);
+  const useCache = excludeSeeds.length === 0;
+
+  // Cache read (only when no excludeSeeds)
+  if (useCache) {
+    const cached = await dynamo.send(new GetCommand({ TableName: TABLE_NAME, Key: { word } }));
+    const item = cached.Item as CacheItem | undefined;
+    if (item?.skeletons?.length) {
+      const matchResult = match(catalogue, item.skeletons, excludeSet);
+      if (matchResult) {
+        const skeleton = item.skeletons[matchResult.variantIndex ?? 0];
+        const seedStar = catalogue.find(s => s.ra === matchResult.patchRA && s.dec === matchResult.patchDec);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({ constellation: matchResult, skeleton, match: item.match, seedStarId: seedStar?.id }),
+        };
+      }
+    }
   }
 
-  const apiKey = await getApiKey();
+  const apiKey = await getOpenRouterKey();
   const result = await retrieveSkeleton(word, apiKey);
 
   if (result.match === null) {
     return { statusCode: 422, headers, body: JSON.stringify({ error: 'No constellation found.' }) };
   }
 
-  await dynamo.send(
-    new PutCommand({
-      TableName: TABLE_NAME,
-      Item: { word, match: result.match, skeletons: result.skeletons },
-    }),
-  );
+  if (useCache) {
+    await dynamo.send(
+      new PutCommand({
+        TableName: TABLE_NAME,
+        Item: { word, match: result.match, skeletons: result.skeletons },
+      }),
+    );
+  }
 
-  return { statusCode: 200, headers, body: JSON.stringify({ skeletons: result.skeletons }) };
+  const matchResult = match(catalogue, result.skeletons, excludeSet);
+  if (!matchResult) {
+    return { statusCode: 500, headers, body: JSON.stringify({ error: 'matching failed' }) };
+  }
+
+  const skeleton = result.skeletons[matchResult.variantIndex ?? 0];
+  const seedStar = catalogue.find(s => s.ra === matchResult.patchRA && s.dec === matchResult.patchDec);
+
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({ constellation: matchResult, skeleton, match: result.match, seedStarId: seedStar?.id }),
+  };
 }
