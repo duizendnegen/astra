@@ -126,6 +126,7 @@ export class InfraStack extends cdk.Stack {
         PINECONE_API_KEY_PARAM: '/astra/pinecone-api-key',
         ICONS_BUCKET_NAME: iconsBucket.bucketName,
         STARS_PATH: '/var/task/stars.json',
+        NODE_ENV: 'production',
       },
     });
 
