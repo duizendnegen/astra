@@ -33,6 +33,7 @@ interface WordData {
   word: string;
   pngBase64: string;
   svgBase64: string;
+  potraceBase64: string;
   skeletons: {
     concaveHull: SkeletonData;
     polygonUnion: SkeletonData;
@@ -54,6 +55,7 @@ function buildWordCache(rows: WordRow[]): WordData[] {
   return proposed.map((row) => {
     let pngBase64 = '';
     let svgBase64 = '';
+    let potraceBase64 = '';
     const skeletons: WordData['skeletons'] = { concaveHull: null, polygonUnion: null, subpathComponents: null };
 
     if (row.png_path && existsSync(row.png_path)) {
@@ -77,8 +79,13 @@ function buildWordCache(rows: WordRow[]): WordData[] {
       }
     }
 
-    log.debug({ word: row.word, hasPng: !!pngBase64, hasSvg: !!svgBase64 }, 'Word cached');
-    return { word: row.word, pngBase64, svgBase64, skeletons, status: row.status };
+    if (row.potrace_svg_path && existsSync(row.potrace_svg_path)) {
+      const potraceSvg = readFileSync(row.potrace_svg_path, 'utf-8');
+      potraceBase64 = Buffer.from(potraceSvg).toString('base64');
+    }
+
+    log.debug({ word: row.word, hasPng: !!pngBase64, hasSvg: !!svgBase64, hasPotrace: !!potraceBase64 }, 'Word cached');
+    return { word: row.word, pngBase64, svgBase64, potraceBase64, skeletons, status: row.status };
   });
 }
 
@@ -147,8 +154,12 @@ const HTML_PAGE = `<!DOCTYPE html>
         <img id="png-img" src="" alt="PNG" />
       </div>
       <div class="panel">
-        <label>SVG</label>
+        <label>SVG (vtracer)</label>
         <img id="svg-img" src="" alt="SVG" />
+      </div>
+      <div class="panel">
+        <label>SVG (potrace)</label>
+        <img id="potrace-img" src="" alt="Potrace SVG" />
       </div>
       <div class="panel">
         <label>1 — Concave Hull</label>
@@ -272,6 +283,17 @@ function render() {
   document.getElementById('svg-img').src = w.svgBase64
     ? \`data:image/svg+xml;base64,\${w.svgBase64}\`
     : '';
+
+  const potraceImg = document.getElementById('potrace-img');
+  if (w.potraceBase64) {
+    potraceImg.src = \`data:image/svg+xml;base64,\${w.potraceBase64}\`;
+    potraceImg.style.opacity = '1';
+    potraceImg.alt = 'Potrace SVG';
+  } else {
+    potraceImg.src = '';
+    potraceImg.style.opacity = '0.3';
+    potraceImg.alt = 'No potrace SVG';
+  }
 
   for (const s of STRATEGIES) {
     const canvas = document.getElementById(CANVAS_IDS[s]);

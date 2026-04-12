@@ -9,10 +9,11 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
+import * as potrace from 'potrace';
 import { readCsv, writeCsv } from './csv.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -60,6 +61,18 @@ async function tracePng(pngPath: string, svgPath: string): Promise<number> {
   return Date.now() - t0;
 }
 
+function traceWithPotrace(pngPath: string, svgPath: string): Promise<void> {
+  // potrace uses jimp which requires forward slashes on Windows
+  const normalizedPngPath = pngPath.replace(/\\/g, '/');
+  return new Promise((resolve, reject) => {
+    potrace.trace(normalizedPngPath, (err: Error | null, svg: string) => {
+      if (err) { reject(err); return; }
+      writeFileSync(svgPath, svg, 'utf-8');
+      resolve();
+    });
+  });
+}
+
 async function main(): Promise<void> {
   if (!existsSync(VTRACER_PATH)) {
     throw new Error(`vtracer not found at ${VTRACER_PATH}. Run setup.ts first.`);
@@ -88,6 +101,17 @@ async function main(): Promise<void> {
 
       row.trace_ms = String(ms);
       row.svg_path = svgPath;
+
+      // Run Potrace on the same PNG alongside vtracer
+      const potraceSvgPath = path.join(DATA_DIR, `${row.word}-linedrawing-potrace.svg`);
+      try {
+        await traceWithPotrace(row.png_path, potraceSvgPath);
+        row.potrace_svg_path = potraceSvgPath;
+        log.info({ word: row.word }, 'Potrace SVG written');
+      } catch (potraceErr) {
+        log.warn({ word: row.word, err: String(potraceErr) }, 'Potrace trace failed — continuing');
+        row.potrace_svg_path = '';
+      }
 
       if (subpaths > MAX_SUBPATHS) {
         row.status = 'retry';

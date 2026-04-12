@@ -20,6 +20,7 @@ export interface WordRow {
   status: WordStatus;
   png_path: string;
   svg_path: string;
+  potrace_svg_path: string;
   png_ms: string;
   trace_ms: string;
   skeleton_ms: string;
@@ -29,7 +30,7 @@ export interface WordRow {
 }
 
 const HEADERS: (keyof WordRow)[] = [
-  'word', 'style', 'status', 'png_path', 'svg_path',
+  'word', 'style', 'status', 'png_path', 'svg_path', 'potrace_svg_path',
   'png_ms', 'trace_ms', 'skeleton_ms', 'retry_count', 'retry_reason', 'skeleton_strategy',
 ];
 
@@ -69,7 +70,7 @@ export function readCsv(csvPath = CSV_PATH): WordRow[] {
     const fields = parseCsvLine(line);
     const row: Partial<WordRow> = {};
     for (let i = 0; i < HEADERS.length; i++) {
-      row[HEADERS[i]] = fields[i] ?? '';  // default missing columns (e.g. retry_reason in old CSVs)
+      (row as Record<string, string>)[HEADERS[i]] = fields[i] ?? '';  // default missing columns (e.g. retry_reason in old CSVs)
     }
     return row as WordRow;
   });
@@ -95,6 +96,7 @@ export function initCsvFromWordList(wordListPath: string, csvPath = CSV_PATH): v
     status: 'new',
     png_path: '',
     svg_path: '',
+    potrace_svg_path: '',
     png_ms: '',
     trace_ms: '',
     skeleton_ms: '',
