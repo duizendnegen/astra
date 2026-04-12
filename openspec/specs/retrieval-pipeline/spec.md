@@ -54,27 +54,25 @@ The system SHALL NOT use `response_format: json_object`. It SHALL parse the JSON
 - **THEN** the fetch is cancelled and L3 returns an empty candidate list
 
 ### Requirement: L4 LLM SVG generation
-If L1 fails, the system SHALL run L4 in parallel with L3. L4 SHALL prompt the LLM to generate a simple SVG silhouette for the word. The generated SVG SHALL be passed to L5 (svg-to-skeleton).
+If L1 fails, the system SHALL run L4 in parallel with L3. L4 SHALL call a Gemini image generation model to produce a PNG of the word as a simple line drawing, trace the PNG to SVG using Potrace, and pass the resulting SVG to L5 (svg-to-skeleton).
 
-The L4 prompt SHALL be:
+The image generation prompt SHALL be:
 ```
-Draw a simple SVG silhouette of "<word>".
-Rules: viewBox="0 0 256 256", no colours.
-Return ONLY the complete <svg>...</svg> element. No explanation, no markdown.
+Simple black line drawing of "<word>" as an icon on white background. Single element, minimum amount of strokes. Clean outlines only, no fill, no shading, no text.
 ```
 
-The L4 model SHALL be configurable via the `L4_MODEL` environment variable (default: `google/gemini-2.5-flash`).
+The L4 image model SHALL be configurable via the `L4_IMAGE_MODEL` environment variable (default: `google/gemini-2.5-flash-image`).
 
-#### Scenario: LLM SVG generated for abstract word
+#### Scenario: Image-traced SVG generated for abstract word
 - **WHEN** neither L1 nor L3 produces a match (e.g. "banana")
-- **THEN** the LLM generates an SVG and L5 converts it to a skeleton
+- **THEN** L4 generates a PNG via image gen, traces it to SVG with Potrace, and L5 converts it to a skeleton
 
-#### Scenario: Invalid SVG returns TRIANGLE_FALLBACK, caller returns 422
-- **WHEN** L4 LLM returns an unparseable or empty SVG
+#### Scenario: Invalid or empty trace returns no result
+- **WHEN** L4 image generation fails or Potrace produces no paths
 - **THEN** the pipeline returns `{ match: null, skeletons: [] }` and the caller returns HTTP 422
 
 ### Requirement: Match provenance recorded
-The system SHALL record which layer produced the match (`1`, `3`, or `4`), the matched entry id and source, the cosine similarity score, and the svg_path used. This provenance SHALL be stored in the DynamoDB cache entry and returned as part of the internal pipeline result for logging.
+The system SHALL record which layer produced the match (`1`, `3`, or `4`), the matched entry id and source (`phosphor`, `custom`, or `generated`), the cosine similarity score, and the svg_path used. This provenance SHALL be stored in the DynamoDB cache entry and returned as part of the internal pipeline result for logging.
 
 #### Scenario: Provenance available after L1 match
 - **WHEN** L1 produces an accepted match
