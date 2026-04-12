@@ -111,6 +111,7 @@ export class InfraStack extends cdk.Stack {
       bundling: {
         forceDockerBundling: true,
         externalModules: ['@aws-sdk/*', '@smithy/*'],
+        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
       },
       environment: {
         TABLE_NAME: skeletonTable.tableName,
