@@ -3,8 +3,7 @@
 // Reads OPENROUTER_API_KEY from environment (via .env.local in project root).
 
 import http from 'http';
-import path from 'path';
-import { retrieveSkeleton, getSharedIndex } from './retrieval.js';
+import { retrieveSkeleton } from './retrieval.js';
 import type { PipelineResult } from './retrieval.js';
 import { match } from './matcher.js';
 import { getCatalogue } from './catalogue.js';
@@ -13,21 +12,9 @@ import { createLogger } from './logger.js';
 const log = createLogger('local');
 const PORT = 3001;
 const API_KEY = process.env.OPENROUTER_API_KEY ?? '';
-// Default: data/ lives one level above the lambda/ working directory
-const INDEX_PATH = process.env.INDEX_PATH ?? path.resolve(process.cwd(), '..', 'data', 'icon-index.sqlite');
 
 if (!API_KEY) {
   log.warn('OPENROUTER_API_KEY not set — LLM calls will fail. Set it in .env.local.');
-}
-
-// Open SQLite index once at startup
-let db: ReturnType<typeof getSharedIndex>;
-try {
-  db = getSharedIndex(INDEX_PATH);
-  log.info({ path: INDEX_PATH }, 'Icon index loaded');
-} catch (err) {
-  log.fatal({ err, path: INDEX_PATH }, 'Failed to open icon index. Run: cd scripts && npm install && OPENROUTER_API_KEY=<key> npx tsx build-index.ts');
-  process.exit(1);
 }
 
 // In-memory cache (keyed by word — retrieval pipeline is deterministic for same index)
@@ -93,7 +80,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   log.info({ word, excludeSeeds }, 'Retrieving skeleton');
-  const result = await retrieveSkeleton(word, db, API_KEY);
+  const result = await retrieveSkeleton(word, API_KEY);
 
   if (result.match === null) {
     res.writeHead(422);

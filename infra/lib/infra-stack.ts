@@ -7,6 +7,7 @@ import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigatewayv2';
@@ -19,6 +20,58 @@ export class InfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // ── GitHub OIDC Identity Provider ───────────────────────────────────
+    // Enables GitHub Actions to obtain short-lived AWS credentials via OIDC.
+    // Provision once per account; CDK handles idempotency via the logical id.
+    const githubOidcProvider = new iam.OpenIdConnectProvider(this, 'GitHubOidcProvider', {
+      url: 'https://token.actions.githubusercontent.com',
+      clientIds: ['sts.amazonaws.com'],
+    });
+
+    // ── GitHub Actions deploy role ────────────────────────────────────────
+    // Trusted only for tokens issued for refs/heads/main. Used by the
+    // deploy workflow to run cdk deploy and scripts/build-index.ts.
+    const deployRole = new iam.Role(this, 'GitHubActionsDeployRole', {
+      roleName: 'astra-github-actions-deploy',
+      assumedBy: new iam.WebIdentityPrincipal(githubOidcProvider.openIdConnectProviderArn, {
+        StringEquals: {
+          'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          'token.actions.githubusercontent.com:sub': 'repo:duizendnegen/astra:ref:refs/heads/main',
+        },
+      }),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess'),
+      ],
+    });
+
+    // ── GitHub Actions read-only role ─────────────────────────────────────
+    // Trusted for any ref in this repo. Used by the CI workflow for cdk diff on PRs.
+    const readOnlyRole = new iam.Role(this, 'GitHubActionsReadOnlyRole', {
+      roleName: 'astra-github-actions-readonly',
+      assumedBy: new iam.WebIdentityPrincipal(githubOidcProvider.openIdConnectProviderArn, {
+        StringLike: {
+          'token.actions.githubusercontent.com:sub': 'repo:duizendnegen/astra:*',
+        },
+        StringEquals: {
+          'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+        },
+      }),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('ReadOnlyAccess'),
+      ],
+    });
+
+    // ── Icons S3 bucket ───────────────────────────────────────────────────
+    // Stores SVG content strings, keyed {source}/{name}. Private; Lambda reads via IAM.
+    const iconsBucket = new s3.Bucket(this, 'IconsBucket', {
+      bucketName: `astra-icons-${this.account}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Grant the deploy role PutObject on the icons bucket (needed for build-index)
+    iconsBucket.grantPut(deployRole);
+
     // ── DynamoDB skeleton cache ──────────────────────────────────────────
     // on-demand billing, word as PK, no TTL
     const skeletonTable = new dynamodb.Table(this, 'SkeletonCache', {
@@ -30,27 +83,47 @@ export class InfraStack extends cdk.Stack {
 
     // ── OpenRouter API key from SSM Parameter ────────────────────────────
     // Provision manually: aws ssm put-parameter --name /astra/openrouter-api-key --type SecureString --value <key>
-    const openRouterKeyParam = ssm.StringParameter.fromStringParameterName(
+    const openRouterKeyParam = ssm.StringParameter.fromSecureStringParameterAttributes(
       this,
       'OpenRouterApiKey',
-      '/astra/openrouter-api-key',
+      { parameterName: '/astra/openrouter-api-key' },
+    );
+
+    // ── Pinecone API key from SSM Parameter ──────────────────────────────
+    // Provision manually: aws ssm put-parameter --name /astra/pinecone-api-key --type SecureString --value <key>
+    const pineconeKeyParam = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      'PineconeApiKey',
+      { parameterName: '/astra/pinecone-api-key' },
     );
 
     // ── Lambda skeleton function ─────────────────────────────────────────
+    // projectRoot is set to the repo root so that Docker bundling mounts the
+    // whole workspace (giving esbuild access to lambda/ from infra/).
     const skeletonFn = new lambdaNodejs.NodejsFunction(this, 'SkeletonFn', {
       functionName: 'astra-skeleton',
       runtime: lambda.Runtime.NODEJS_20_X,
       entry: path.join(__dirname, '../../lambda/src/skeleton.ts'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(30),
+      projectRoot: path.join(__dirname, '../..'),
+      depsLockFilePath: path.join(__dirname, '../../lambda/package-lock.json'),
+      bundling: {
+        forceDockerBundling: true,
+        externalModules: ['@aws-sdk/*', '@smithy/*'],
+      },
       environment: {
         TABLE_NAME: skeletonTable.tableName,
         OPENROUTER_API_KEY_PARAM: '/astra/openrouter-api-key',
+        PINECONE_API_KEY_PARAM: '/astra/pinecone-api-key',
+        ICONS_BUCKET_NAME: iconsBucket.bucketName,
       },
     });
 
     skeletonTable.grantReadWriteData(skeletonFn);
     openRouterKeyParam.grantRead(skeletonFn);
+    pineconeKeyParam.grantRead(skeletonFn);
+    iconsBucket.grantRead(skeletonFn);
 
     // ── HTTP API Gateway ─────────────────────────────────────────────────
     const httpApi = new apigateway.HttpApi(this, 'AstraApi', {
@@ -135,6 +208,18 @@ export class InfraStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'ApiEndpoint', {
       value: httpApi.apiEndpoint,
+    });
+    new cdk.CfnOutput(this, 'IconsBucketName', {
+      value: iconsBucket.bucketName,
+      description: 'S3 bucket for icon SVG content — set as ICONS_BUCKET_NAME in workflows',
+    });
+    new cdk.CfnOutput(this, 'DeployRoleArn', {
+      value: deployRole.roleArn,
+      description: 'IAM role ARN for GitHub Actions deploy workflow',
+    });
+    new cdk.CfnOutput(this, 'ReadOnlyRoleArn', {
+      value: readOnlyRole.roleArn,
+      description: 'IAM role ARN for GitHub Actions CI workflow (cdk diff)',
     });
   }
 }

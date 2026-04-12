@@ -1,16 +1,76 @@
 services:
-  api:
-    build: ./lambda
+  pinecone-local:
+    image: ghcr.io/pinecone-io/pinecone-local:latest
     ports:
-      - "3001:3001"
+      - "5080:5080"
+      - "5081:5081"
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin; do
+        echo 'Waiting for MinIO...'; sleep 1;
+      done;
+      /usr/bin/mc mb --ignore-existing local/astra-icons-local;
+      echo 'MinIO bucket ready.';
+      "
+    restart: on-failure
+
+  index-init:
+    build: ./scripts
     env_file:
       - path: .env.local
         required: false
     environment:
-      - INDEX_PATH=/data/icon-index.sqlite
+      - PINECONE_CONTROLLER_HOST=http://pinecone-local:5080
+      - PINECONE_HOST=http://pinecone-local:5081
+      - PINECONE_INDEX_NAME=astra-dev-icons
+      - ICONS_BUCKET_NAME=astra-icons-local
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_REGION=us-east-1
+      - PINECONE_UPSERT_BATCH=10
+    depends_on:
+      - pinecone-local
+      - minio-init
+    restart: on-failure
+
+  api:
+    build: ./lambda
+    ports:
+      - "3001:3001"
+    depends_on:
+      - index-init
+      - pinecone-local
+      - minio
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
       - STARS_PATH=/stars/stars.json
+      - PINECONE_CONTROLLER_HOST=http://pinecone-local:5080
+      - PINECONE_HOST=http://pinecone-local:5081
+      - PINECONE_INDEX_NAME=astra-dev-icons
+      - ICONS_BUCKET_NAME=astra-icons-local
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_REGION=us-east-1
     volumes:
-      - ./lambda/src:/app/src
       - ./data:/data
       - ./frontend/public/data:/stars:ro
 
@@ -22,7 +82,3 @@ services:
       - api
     environment:
       - API_PROXY_TARGET=http://api:3001
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/index.html:/app/index.html
-      - ./frontend/public:/app/public

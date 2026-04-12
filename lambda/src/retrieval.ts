@@ -3,14 +3,15 @@
  *
  * Word → Skeleton retrieval pipeline:
  *   L0  Local normalisation (lowercase, strip punctuation, lemmatise)
- *   L1  Direct embedding match against SQLite icon index
+ *   L1  Direct embedding match against Pinecone vector index + S3 SVG fetch
  *   L3  LLM concept mapping (synonyms + visual representations + translate)
  *   L4  LLM SVG generation (last resort)
  *   L5  SVG → Skeleton (via svg-to-skeleton.ts)
  */
 
-import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
+import { Pinecone } from '@pinecone-database/pinecone';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import * as potrace from 'potrace';
 import type { Skeleton } from './core.js';
 import { svgToSkeleton, rdpSimplify, visvalingamWhyatt, type SimplifyFn } from './svg-to-skeleton.js';
@@ -21,12 +22,15 @@ const log = createLogger('retrieval');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.80');
+// Calibrated for text-embedding-3-small with label-only embed text (icon name, no tags).
+// Exact-name queries score 1.0; direct semantic near-matches 0.60–0.92; noise < 0.45.
+// 0.60 chosen to pass near-synonyms (rubbish→trash=0.59) while rejecting short-word
+// false positives (bin→binary=0.587 would misfire at a lower threshold).
+export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.60');
 export const THRESHOLD_PHYLOPIC = parseFloat(process.env.THRESHOLD_PHYLOPIC ?? '0.55');
 export const THRESHOLD_CUSTOM = parseFloat(process.env.THRESHOLD_CUSTOM ?? '0.85');
 
 // Sources to query in L1. Comma-separated; default includes phosphor and custom.
-// Set L1_SOURCES=phosphor to restore pre-custom behaviour exactly.
 const L1_SOURCES: string[] = (process.env.L1_SOURCES ?? 'phosphor,custom')
   .split(',')
   .map((s) => s.trim())
@@ -36,8 +40,6 @@ const EMBED_MODEL = 'openai/text-embedding-3-small';
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const L4_IMAGE_MODEL = process.env.L4_IMAGE_MODEL ?? 'google/gemini-2.5-flash-image';
 
-// Disk cache for L5 sub-steps during local development.
-// Resolves relative to the working directory (expected: lambda/ when running dev:local).
 const L5_DISK_CACHE = process.env.NODE_ENV !== 'production'
   ? path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), '..', 'data'), 'l5-cache')
   : undefined;
@@ -57,64 +59,96 @@ export interface PipelineResult {
   skeletons: Skeleton[];
 }
 
-interface IndexEntry {
+interface PineconeMatch {
   id: string;
-  source: string;
-  label: string;
-  tags: string;
-  svg_path: string;
+  score: number;
+  metadata?: { source?: string; label?: string; tags?: string };
 }
 
-// ── Database helpers ──────────────────────────────────────────────────────────
+// ── Pinecone + S3 client initialisation ──────────────────────────────────────
+// Clients are initialised once at module load (standard Lambda best practice).
+// API key resolution is lazy-async: the promise is kicked off immediately so
+// that on warm invocations the key is already resolved.
 
-let _db: Database.Database | null = null;
-
-export function openIndex(dbPath: string): Database.Database {
-  const db = new Database(dbPath, { readonly: true });
-  sqliteVec.load(db);
-  return db;
-}
-
-// Default path resolves relative to cwd (lambda/ when running dev:local, /tmp in Lambda).
-const DEFAULT_INDEX_PATH = path.resolve(
-  process.env.DATA_DIR ?? path.join(process.cwd(), '..', 'data'),
-  'icon-index.sqlite',
+const s3 = new S3Client(
+  process.env.AWS_ENDPOINT_URL
+    ? { endpoint: process.env.AWS_ENDPOINT_URL, forcePathStyle: true, region: process.env.AWS_REGION ?? 'us-east-1' }
+    : {},
 );
 
-export function getSharedIndex(dbPath?: string): Database.Database {
-  if (!_db) _db = openIndex(dbPath ?? DEFAULT_INDEX_PATH);
-  return _db;
+let _pineconeIndex: ReturnType<InstanceType<typeof Pinecone>['index']> | null = null;
+
+const _pineconeReady: Promise<void> = (async () => {
+  try {
+    let apiKey = process.env.PINECONE_API_KEY;
+    if (!apiKey) {
+      const ssm = new SSMClient({});
+      const res = await ssm.send(new GetParameterCommand({
+        Name: process.env.PINECONE_API_KEY_PARAM!,
+        WithDecryption: true,
+      }));
+      apiKey = res.Parameter?.Value ?? '';
+    }
+    const indexName = process.env.PINECONE_INDEX_NAME ?? 'astra-icons';
+    const controllerHost = process.env.PINECONE_CONTROLLER_HOST;
+    const dataHost = process.env.PINECONE_HOST;
+    const pc = controllerHost
+      ? new Pinecone({ apiKey, controllerHostUrl: controllerHost })
+      : new Pinecone({ apiKey });
+    _pineconeIndex = dataHost
+      ? pc.index(indexName, dataHost)
+      : pc.index(indexName);
+  } catch (err) {
+    log.error({ err }, 'Pinecone init failed');
+  }
+})();
+
+async function getPineconeIndex() {
+  await _pineconeReady;
+  return _pineconeIndex;
+}
+
+// ── S3 SVG fetch ──────────────────────────────────────────────────────────────
+
+async function fetchSvgFromS3(id: string): Promise<string | null> {
+  const bucket = process.env.ICONS_BUCKET_NAME;
+  if (!bucket) {
+    log.warn('ICONS_BUCKET_NAME not set — cannot fetch SVG');
+    return null;
+  }
+  const key = id.replace(':', '/');
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if (!res.Body) return null;
+    return await res.Body.transformToString('utf-8');
+  } catch (err) {
+    log.warn({ err, key }, 'S3 GetObject failed');
+    return null;
+  }
 }
 
 // ── L0 — Normalisation ────────────────────────────────────────────────────────
 
 /** Lowercase, strip punctuation, lemmatise (basic suffix rules without compromise for Lambda compat). */
 export function normalise(word: string): string {
-  // Lowercase and strip punctuation
   let w = word.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
 
-  // Conservative plural normalisation only — aggressive suffix rules (ing, tion, er)
-  // were removed because they corrupt non-English words (e.g. "Faultier" → "faulti")
-  // and common English words (e.g. "ring" → "r", "tower" → "tow"). Embeddings handle
-  // morphological variation without explicit stemming.
   w = w
-    .replace(/ies$/, 'y')           // butterflies → butterfly
-    .replace(/(?<=[^aeiou])s$/, ''); // cars → car, dogs → dog (not "bus", "gas")
+    .replace(/ies$/, 'y')
+    .replace(/(?<=[^aeiou])s$/, '');
 
-  // Re-trim after suffix removal
   w = w.trim();
   return w.length > 0 ? w : word.toLowerCase();
 }
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
 
-async function embed(text: string, apiKey: string): Promise<Float32Array | null> {
+async function embed(text: string, apiKey: string): Promise<number[] | null> {
   const results = await embedBatch([text], apiKey);
   return results[0] ?? null;
 }
 
-/** Embed multiple texts in a single API call. */
-async function embedBatch(texts: string[], apiKey: string): Promise<(Float32Array | null)[]> {
+async function embedBatch(texts: string[], apiKey: string): Promise<(number[] | null)[]> {
   if (texts.length === 0) return [];
   try {
     const t0 = Date.now();
@@ -130,9 +164,9 @@ async function embedBatch(texts: string[], apiKey: string): Promise<(Float32Arra
     const data = (await res.json()) as { data?: { embedding: number[]; index: number }[] };
     const durationMs = Date.now() - t0;
     log.debug({ count: texts.length, durationMs }, 'embed complete');
-    const ordered = new Array<Float32Array | null>(texts.length).fill(null);
+    const ordered = new Array<number[] | null>(texts.length).fill(null);
     for (const item of data.data ?? []) {
-      ordered[item.index] = new Float32Array(item.embedding);
+      ordered[item.index] = item.embedding;
     }
     return ordered;
   } catch (err) {
@@ -141,65 +175,40 @@ async function embedBatch(texts: string[], apiKey: string): Promise<(Float32Arra
   }
 }
 
-// ── L1 — Index search ─────────────────────────────────────────────────────────
+// ── L1 — Pinecone search ──────────────────────────────────────────────────────
 
 interface SearchResult {
-  entry: IndexEntry;
+  id: string;
+  source: string;
   similarity: number;
 }
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom < 1e-10 ? 0 : dot / denom;
-}
-
-// Pre-compiled statement cached at module level for efficiency.
-// Invalidated when L1_SOURCES changes (static at module load, so no invalidation needed).
-let _searchStmt: ReturnType<Database.Database['prepare']> | null = null;
-function getSearchStmt(db: Database.Database) {
-  if (!_searchStmt) {
-    // Build WHERE clause from L1_SOURCES. Source names are validated as alphanumeric
-    // at parse time so interpolation is safe (no SQL injection risk).
-    // vec_distance_cosine() returns L2 distance; sorted ascending in JS then converted to similarity.
-    //
-    // Note: vec0 ANN (MATCH) was investigated but corpus-mixing across sources caused issues.
-    // Full-scan is acceptable: L1 is only on the critical path for hits, and L3/L4 run in parallel.
-    // See l1-ann-investigation.md.
-    const validSources = L1_SOURCES.filter((s) => /^[a-z0-9_]+$/i.test(s));
-    const inClause = validSources.map((s) => `'${s}'`).join(', ');
-    _searchStmt = db.prepare(`
-      SELECT v.id, vec_distance_cosine(v.embedding, vec_f32(:buf)) AS dist,
-             e.source, e.label, e.tags, e.svg_path
-      FROM vectors v
-      JOIN entries e ON e.id = v.id
-      WHERE e.source IN (${inClause})
-    `);
-  }
-  return _searchStmt;
-}
-
-function searchIndex(db: Database.Database, queryVec: Float32Array, topK = 5): SearchResult[] {
-  const buf = Buffer.from(queryVec.buffer, queryVec.byteOffset, queryVec.byteLength);
+async function searchPinecone(queryVec: number[], topK = 5): Promise<SearchResult[]> {
+  const index = await getPineconeIndex();
+  if (!index) return [];
 
   const t0 = Date.now();
-  const rows = getSearchStmt(db).all({ buf }) as (IndexEntry & { dist: number })[];
-  // Sort by cosine distance ascending, take topK
-  rows.sort((a, b) => a.dist - b.dist);
-  const top = rows.slice(0, topK);
-  const durationMs = Date.now() - t0;
-  log.debug({ rows: rows.length, durationMs, topSim: top[0] ? (1 - top[0].dist * top[0].dist / 2).toFixed(3) : 'none' }, 'L1 index search');
+  try {
+    const validSources = L1_SOURCES.filter((s) => /^[a-z0-9_]+$/i.test(s));
+    const response = await index.query({
+      vector: queryVec,
+      topK,
+      filter: { source: { $in: validSources } },
+      includeMetadata: true,
+    });
+    const durationMs = Date.now() - t0;
+    const matches = (response.matches ?? []) as PineconeMatch[];
+    log.debug({ count: matches.length, durationMs, topScore: matches[0]?.score?.toFixed(3) ?? 'none' }, 'L1 Pinecone search');
 
-  return top.map((r) => ({
-    entry: { id: r.id, source: r.source, label: r.label, tags: r.tags, svg_path: r.svg_path },
-    // Convert L2 distance to cosine similarity for unit-norm embeddings
-    similarity: 1 - (r.dist * r.dist) / 2,
-  }));
+    return matches.map((m) => ({
+      id: m.id,
+      source: String(m.metadata?.source ?? ''),
+      similarity: m.score ?? 0,
+    }));
+  } catch (err) {
+    log.error({ err }, 'Pinecone query error');
+    return [];
+  }
 }
 
 function thresholdFor(source: string): number {
@@ -210,7 +219,7 @@ function thresholdFor(source: string): number {
 
 function bestAboveThreshold(results: SearchResult[]): SearchResult | null {
   for (const r of results) {
-    if (r.similarity >= thresholdFor(r.entry.source)) return r;
+    if (r.similarity >= thresholdFor(r.source)) return r;
   }
   return null;
 }
@@ -237,7 +246,6 @@ async function l3Candidates(word: string, apiKey: string, signal?: AbortSignal):
     const stripped = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
     const parsed = JSON.parse(stripped);
     if (Array.isArray(parsed)) return (parsed as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, 5);
-    // Some models return { candidates: [...] } or similar
     const vals = Object.values(parsed as object);
     const arr = vals.find(Array.isArray) as unknown[] | undefined;
     return (arr ?? []).filter((x): x is string => typeof x === 'string').slice(0, 5);
@@ -251,10 +259,6 @@ async function l3Candidates(word: string, apiKey: string, signal?: AbortSignal):
 const L4_IMAGE_PROMPT = (word: string) =>
   `Simple black line drawing of "${word}" as an icon on white background. Single element, minimum amount of strokes. Clean outlines only, no fill, no shading, no text.`;
 
-/**
- * Generate a PNG image for `word` via Gemini image gen on OpenRouter.
- * Returns a Buffer of the PNG or null on failure.
- */
 export async function l4GenerateFromImage(word: string, apiKey: string, signal?: AbortSignal): Promise<Buffer | null> {
   try {
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
@@ -296,9 +300,6 @@ export async function l4GenerateFromImage(word: string, apiKey: string, signal?:
   }
 }
 
-/**
- * Trace a PNG buffer with Potrace, returning an SVG string or null on failure.
- */
 export function traceWithPotrace(pngBuffer: Buffer): Promise<string | null> {
   return new Promise((resolve) => {
     potrace.trace(pngBuffer, (err: Error | null, svg: string) => {
@@ -336,38 +337,41 @@ export function svgToSkeletonWithOpts(svgOrPath: string): Skeleton | null {
 
 export async function retrieveSkeleton(
   word: string,
-  db: Database.Database,
   apiKey: string,
 ): Promise<PipelineResult> {
   const t0 = Date.now();
-  const elapsed = () => `+${Date.now() - t0}ms`;
 
   // L0: normalise
   const normalised = normalise(word);
   log.debug({ word, normalised }, 'L0 normalised');
 
-  // L1: embed + search
+  // L1: embed + Pinecone search + S3 SVG fetch
   const queryVec = await embed(normalised, apiKey);
   if (queryVec) {
-    const results = searchIndex(db, queryVec);
+    const results = await searchPinecone(queryVec);
     const best = bestAboveThreshold(results);
     if (best) {
-      log.info({ id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
-      const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
-      if (skeleton) {
-        log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
-        return {
-          match: {
-            source: best.entry.source as 'phosphor' | 'phylopic' | 'custom',
-            id: best.entry.id,
-            similarity: best.similarity,
-            layer: 1,
-            svgPath: best.entry.svg_path,
-          },
-          skeletons: [skeleton],
-        };
+      log.info({ id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
+      const svgContent = await fetchSvgFromS3(best.id);
+      if (svgContent) {
+        const skeleton = svgToSkeletonWithOpts(svgContent);
+        if (skeleton) {
+          log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
+          return {
+            match: {
+              source: best.source as 'phosphor' | 'phylopic' | 'custom',
+              id: best.id,
+              similarity: best.similarity,
+              layer: 1,
+              svgPath: svgContent,
+            },
+            skeletons: [skeleton],
+          };
+        }
+        log.warn({ svgLen: svgContent.length, durationMs: Date.now() - t0 }, 'L1 skeleton null');
+      } else {
+        log.warn({ id: best.id, durationMs: Date.now() - t0 }, 'L1 S3 fetch failed');
       }
-      log.warn({ svgLen: best.entry.svg_path.length, durationMs: Date.now() - t0 }, 'L1 skeleton null');
     } else {
       log.info({ bestSim: results[0]?.similarity.toFixed(3) ?? 'none', durationMs: Date.now() - t0 }, 'L1 miss');
     }
@@ -380,13 +384,11 @@ export async function retrieveSkeleton(
   const l3Controller = new AbortController();
   const l4Controller = new AbortController();
 
-  // 5s timer: when both timerFired and l4Done are set, abort L3
   const timer = setTimeout(() => {
     timerFired = true;
     if (l4Done) l3Controller.abort();
   }, 5000);
 
-  // L4 task: runs concurrently; sets flags and stores result for use if L3 misses
   const l4Task = (async () => {
     const pngBuffer = await l4GenerateFromImage(normalised, apiKey, l4Controller.signal);
     l4Done = true;
@@ -409,7 +411,6 @@ export async function retrieveSkeleton(
     }
   })();
 
-  // L3 task: wins immediately on a valid index result; abortable via l3Controller
   const l3Task = (async (): Promise<PipelineResult | null> => {
     const candidates = await l3Candidates(normalised, apiKey, l3Controller.signal);
     log.debug({ candidates, durationMs: Date.now() - t0 }, 'L3 candidates');
@@ -420,20 +421,25 @@ export async function retrieveSkeleton(
       for (let i = 0; i < candidates.length; i++) {
         const vec = vecs[i];
         if (!vec) continue;
-        const results = searchIndex(db, vec);
+        const results = await searchPinecone(vec);
         const best = bestAboveThreshold(results);
         if (best) {
-          log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
-          const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
-          if (skeleton) {
-            clearTimeout(timer);
-            l4Controller.abort();
-            return {
-              match: { source: best.entry.source as 'phosphor' | 'phylopic' | 'custom', id: best.entry.id, similarity: best.similarity, layer: 3, svgPath: best.entry.svg_path },
-              skeletons: [skeleton],
-            };
+          log.info({ via: candidates[i], id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
+          const svgContent = await fetchSvgFromS3(best.id);
+          if (svgContent) {
+            const skeleton = svgToSkeletonWithOpts(svgContent);
+            if (skeleton) {
+              clearTimeout(timer);
+              l4Controller.abort();
+              return {
+                match: { source: best.source as 'phosphor' | 'phylopic' | 'custom', id: best.id, similarity: best.similarity, layer: 3, svgPath: svgContent },
+                skeletons: [skeleton],
+              };
+            }
+            log.warn({ via: candidates[i], durationMs: Date.now() - t0 }, 'L3 skeleton null');
+          } else {
+            log.warn({ via: candidates[i], id: best.id, durationMs: Date.now() - t0 }, 'L3 S3 fetch failed');
           }
-          log.warn({ via: candidates[i], durationMs: Date.now() - t0 }, 'L3 skeleton null');
         }
       }
     }
@@ -441,16 +447,13 @@ export async function retrieveSkeleton(
     return null;
   })();
 
-  // Await L3 (L4 runs concurrently and may abort L3 via timer + l4Done)
   const l3Result = await l3Task;
 
   if (l3Result !== null) {
-    // L3 won — wait for L4 to settle (already aborted inside l3Task)
     await l4Task;
     return l3Result;
   }
 
-  // L3 missed — clear timer (L3 is done, no longer needs aborting) and await L4
   clearTimeout(timer);
   await l4Task;
 

@@ -22,18 +22,13 @@ Enter any word — a person, animal, feeling, place — and Astra finds a real p
 
 ## Local development
 
+Copy `.env.local.example` to `.env.local` and fill in your `OPENROUTER_API_KEY`, then:
+
 ```bash
-# Start the API and frontend together (recommended)
 docker compose up
 ```
 
-The app runs at `http://localhost:5173`. The API runs on port 3001.
-
-**Environment variables** — create `.env.local` in the project root:
-
-```
-OPENROUTER_API_KEY=your_key_here
-```
+The app runs at `http://localhost:5173`. The API runs on port 3001. Local Pinecone and MinIO services start automatically alongside the API.
 
 ### Running services individually
 
@@ -106,18 +101,8 @@ Flags can be combined: `?show_lines=1&show_stars=1`
 
 ---
 
-## Infrastructure
+## Deployment
 
-All AWS infrastructure is defined in CDK (`infra/`). Deploys to `astra.plusx.black` via CloudFront + S3 + Lambda + DynamoDB.
+Infrastructure is defined in CDK (`infra/`). After the initial setup, all deploys run automatically via GitHub Actions on push to `main` — tests, icon index build, frontend build, and `cdk deploy` in sequence.
 
-```bash
-cd infra && npm install
-
-# Preview changes
-npx cdk diff
-
-# Deploy
-npx cdk deploy
-```
-
-See `infra/README.md` for CDK-specific commands and `project-plan.md` for full architecture documentation.
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for first-time setup instructions.
