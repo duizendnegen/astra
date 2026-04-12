@@ -1,6 +1,6 @@
 export interface Features {
   showLines: boolean;
-  showStars: boolean;
+  showStars: false | 'named' | 'constellation';
   renderMode: 'stars' | 'skeleton';
   showConstellationImage: boolean;
   showAssociation: boolean;

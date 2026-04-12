@@ -1,4 +1,4 @@
-import { loadCatalogue, loadConstellationLines } from './catalogue';
+import { loadCatalogue, loadConstellationLines, loadStarNames } from './catalogue';
 import { init, resize, setConstellation, animateToResult, animateToLanding, setOverlayData, getProjection, buildProjectionForCamera } from './renderer';
 import { buildShareUrl, copyToClipboard, decode } from './share';
 import { exportPng } from './export';
@@ -388,13 +388,14 @@ async function boot(): Promise<void> {
   featureConstellationImage.checked = features.showConstellationImage;
   featureAssociation.checked = features.showAssociation;
 
-  const [catalogue, constellationLines] = await Promise.all([
+  const [catalogue, constellationLines, starNames] = await Promise.all([
     loadCatalogue(),
     features.showLines ? loadConstellationLines() : Promise.resolve([]),
+    features.showStars === 'constellation' ? loadStarNames() : Promise.resolve(new Map<number, string>()),
   ]);
 
   init(canvas, catalogue);
-  setOverlayData(features, constellationLines, NAMED_STARS);
+  setOverlayData(features, constellationLines, NAMED_STARS, starNames);
   catalogueStatus.textContent = '';
   findBtn.disabled = false;
 

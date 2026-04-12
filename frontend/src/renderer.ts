@@ -19,6 +19,7 @@ let constellationAlpha: number = 1;
 let features: Features = { showLines: false, showStars: false, renderMode: 'stars', showConstellationImage: false, showAssociation: false, showStarLabels: false };
 let constellationLines: ConstellationLines[] = [];
 let namedStars: NamedStar[] = [];
+let starNameMap: Map<number, string> = new Map();
 
 // ── Projection helpers ────────────────────────────────────────────────────
 
@@ -165,6 +166,21 @@ function drawConstellation(): void {
     ctx.fill();
     ctx.globalAlpha = 1;
   }
+
+  // Star name labels (constellation mode only)
+  if (features.showStars === 'constellation') {
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#ccd9ff';
+    for (let idx = 0; idx < constellationStars.length; idx++) {
+      const pt = starPositions[idx];
+      if (!pt) continue;
+      const name = starNameMap.get(constellationStars[idx].id);
+      if (!name) continue;
+      ctx.globalAlpha = constellationAlpha;
+      ctx.fillText(name, pt[0] + 6, pt[1] - 4);
+    }
+    ctx.globalAlpha = 1;
+  }
 }
 
 export function fovBbox(): { minRA: number; maxRA: number; minDec: number; maxDec: number } {
@@ -224,7 +240,7 @@ function drawIAULines(): void {
 }
 
 function drawNamedStars(): void {
-  if (!features.showStars || namedStars.length === 0) return;
+  if (features.showStars !== 'named' || namedStars.length === 0) return;
   ctx.font = '11px sans-serif';
   ctx.fillStyle = '#ccd9ff';
   ctx.globalAlpha = 0.85 * constellationAlpha;
@@ -321,10 +337,11 @@ export function setConstellation(result: MatchResult | null): void {
   constellation = result;
 }
 
-export function setOverlayData(f: Features, lines: ConstellationLines[], named: NamedStar[]): void {
+export function setOverlayData(f: Features, lines: ConstellationLines[], named: NamedStar[], nameMap: Map<number, string> = new Map()): void {
   features = f;
   constellationLines = lines;
   namedStars = named;
+  starNameMap = nameMap;
 }
 
 export function getCamera(): CameraState { return { ...camera }; }
