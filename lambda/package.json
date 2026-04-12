@@ -27,7 +27,7 @@
     "@aws-sdk/client-dynamodb": "^3.1019.0",
     "@aws-sdk/client-ssm": "^3.1023.0",
     "@aws-sdk/lib-dynamodb": "^3.1019.0",
-    "better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^12.8.0",
     "compromise": "^14.14.4",
     "concaveman": "^1.2.1",
     "pino": "^9.0.0",

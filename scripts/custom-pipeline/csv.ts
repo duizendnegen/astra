@@ -20,17 +20,16 @@ export interface WordRow {
   status: WordStatus;
   png_path: string;
   svg_path: string;
-  potrace_svg_path: string;
   png_ms: string;
   trace_ms: string;
   skeleton_ms: string;
   retry_count: string;
   retry_reason: string;
-  skeleton_strategy: string;  // 'concave-hull' | 'polygon-union' | 'subpath-components' | ''
+  skeleton_strategy: string;  // 'polygon-union' | ''
 }
 
 const HEADERS: (keyof WordRow)[] = [
-  'word', 'style', 'status', 'png_path', 'svg_path', 'potrace_svg_path',
+  'word', 'style', 'status', 'png_path', 'svg_path',
   'png_ms', 'trace_ms', 'skeleton_ms', 'retry_count', 'retry_reason', 'skeleton_strategy',
 ];
 
@@ -96,7 +95,6 @@ export function initCsvFromWordList(wordListPath: string, csvPath = CSV_PATH): v
     status: 'new',
     png_path: '',
     svg_path: '',
-    potrace_svg_path: '',
     png_ms: '',
     trace_ms: '',
     skeleton_ms: '',

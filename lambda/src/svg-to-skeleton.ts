@@ -15,7 +15,6 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import concaveman from 'concaveman';
 import polygonClipping from 'polygon-clipping';
 import type { Skeleton } from './core.js';
 
@@ -32,8 +31,6 @@ export interface SvgToSkeletonOptions {
   targetMin?: number;        // Min points (default 15)
   targetMax?: number;        // Max points (default 40)
   diskCacheDir?: string;     // Optional disk cache directory for dev
-  concavity?: number;        // Concave hull concavity (default 3.0; higher = more convex)
-  strategy?: 'concave-hull' | 'polygon-union' | 'subpath-components';  // Contour extraction strategy (default: 'concave-hull')
 }
 
 interface SampledPath {
@@ -281,23 +278,6 @@ function samplePath(svgPathD: string): SampledPath {
   return { subpaths };
 }
 
-// ── Outline contour extraction ────────────────────────────────────────────────
-
-/** Compute the concave hull of a flat point cloud and return the outer contour.
- *  Returns [] for fewer than 3 points (degenerate input). */
-export function concaveHullContour(points: Point[], concavity: number): Point[] {
-  if (points.length < 3) return [];
-  // concaveman returns a closed ring where the last point equals the first
-  const ring = concaveman(points as number[][], concavity, 0) as Point[];
-  // Drop the closing duplicate
-  if (ring.length > 1) {
-    const last = ring[ring.length - 1];
-    const first = ring[0];
-    if (last[0] === first[0] && last[1] === first[1]) return ring.slice(0, -1);
-  }
-  return ring;
-}
-
 // ── Polygon-union contour extraction ─────────────────────────────────────────
 
 function polygonArea(ring: Point[]): number {
@@ -451,102 +431,6 @@ function buildLoopEdges(n: number): [number, number][] {
   return edges;
 }
 
-// ── Subpath-components skeleton ───────────────────────────────────────────────
-
-/**
- * Build a multi-component skeleton by treating each normalised subpath as an
- * independent structural element.
- *
- * 1. Allocate a point budget per subpath proportional to its raw point count
- *    (proxy for perimeter); minimum 3 points per subpath.
- * 2. Scale down allocations if the total exceeds targetMax.
- * 3. RDP-simplify each subpath to its budget.
- * 4. Build intra-subpath closed loop edges with globally offset indices.
- * 5. Add one inter-subpath proximity bridge edge per subpath (deduplicated).
- */
-export function buildSubpathComponentsSkeleton(
-  normSubpaths: Point[][],
-  simplifyFn: SimplifyFn,
-  initialEpsilon: number,
-  targetMin: number,
-  targetMax: number,
-): { points: Point[]; edges: [number, number][] } {
-  // Step 1: proportional budget allocation
-  const rawCounts = normSubpaths.map((sp) => sp.length);
-  const totalRaw = rawCounts.reduce((s, c) => s + c, 0);
-
-  let allocated = rawCounts.map((c) => Math.max(3, Math.round(targetMax * c / totalRaw)));
-
-  // Step 2: scale down if total exceeds targetMax
-  const totalAllocated = allocated.reduce((s, c) => s + c, 0);
-  if (totalAllocated > targetMax) {
-    const scale = targetMax / totalAllocated;
-    allocated = allocated.map((c) => Math.max(3, Math.round(c * scale)));
-  }
-
-  // Step 3: simplify each subpath to its budget
-  const simplifiedSubpaths: Point[][] = normSubpaths.map((sp, i) => {
-    const budget = allocated[i];
-    if (sp.length <= budget) return sp;
-    const { points } = simplifyToTarget(sp, simplifyFn, initialEpsilon, budget, budget);
-    return points.length >= 2 ? points : sp.slice(0, Math.min(sp.length, budget));
-  });
-
-  // Flatten all points, tracking per-subpath offsets
-  const allPoints: Point[] = [];
-  const offsets: number[] = [];
-  for (const sp of simplifiedSubpaths) {
-    offsets.push(allPoints.length);
-    allPoints.push(...sp);
-  }
-
-  const edges: [number, number][] = [];
-
-  // Step 4: intra-subpath closed loop edges
-  for (let i = 0; i < simplifiedSubpaths.length; i++) {
-    const sp = simplifiedSubpaths[i];
-    const off = offsets[i];
-    for (let j = 0; j < sp.length - 1; j++) {
-      edges.push([off + j, off + j + 1]);
-    }
-    if (sp.length >= 2) edges.push([off + sp.length - 1, off]);
-  }
-
-  // Step 5: inter-subpath proximity bridge edges (one per subpath, deduplicated)
-  const bridged = new Set<string>();
-  for (let i = 0; i < simplifiedSubpaths.length; i++) {
-    const spA = simplifiedSubpaths[i];
-    const offA = offsets[i];
-    let bestDist = Infinity;
-    let bestEdge: [number, number] | null = null;
-
-    for (let j = 0; j < simplifiedSubpaths.length; j++) {
-      if (i === j) continue;
-      const spB = simplifiedSubpaths[j];
-      const offB = offsets[j];
-      for (let ai = 0; ai < spA.length; ai++) {
-        for (let bi = 0; bi < spB.length; bi++) {
-          const dist = Math.hypot(spA[ai][0] - spB[bi][0], spA[ai][1] - spB[bi][1]);
-          if (dist < bestDist) {
-            bestDist = dist;
-            bestEdge = [offA + ai, offB + bi];
-          }
-        }
-      }
-    }
-
-    if (bestEdge) {
-      const key = `${Math.min(bestEdge[0], bestEdge[1])}-${Math.max(bestEdge[0], bestEdge[1])}`;
-      if (!bridged.has(key)) {
-        bridged.add(key);
-        edges.push(bestEdge);
-      }
-    }
-  }
-
-  return { points: allPoints, edges };
-}
-
 // ── Extract all path elements from SVG ────────────────────────────────────────
 
 /** Parse an attribute value by name from an SVG/HTML tag's attribute string. */
@@ -617,13 +501,11 @@ export function svgToSkeleton(
     targetMin = 15,
     targetMax = 40,
     diskCacheDir,
-    concavity = 1.5,
-    strategy = 'concave-hull',
   } = opts;
 
   const hash = svgHash(svgOrPath);
-  // Cache key includes strategy ('concave-hull' | 'polygon-union' | 'subpath-components')
-  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__${strategy}__${concavity}__outline-v3`;
+  // Cache key uses polygon-union strategy implicitly
+  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__polygon-union__outline-v3`;
 
   // Check skeleton cache
   if (skeletonCache.has(skelKey)) return skeletonCache.get(skelKey)!;
@@ -664,33 +546,19 @@ export function svgToSkeleton(
 
   const normSubpaths = sampled.subpaths.map((pts) => normalisePoints(pts, vb!));
 
-  // Step 3: extract skeleton — strategy-dependent
-  let skeleton: Skeleton;
+  // Step 3: extract outer contour via polygon-union
+  const contour = extractOutlineContour(normSubpaths);
+  if (contour.length === 0) return null;
 
-  if (strategy === 'subpath-components' && normSubpaths.length > 1) {
-    // Multi-component graph: each subpath is an independent structural element
-    const { points, edges } = buildSubpathComponentsSkeleton(
-      normSubpaths, simplifyFn, initialEpsilon, targetMin, targetMax,
-    );
-    if (points.length < 3) return null;
-    skeleton = { points: points as [number, number][], edges };
-  } else {
-    // Outer contour strategies (concave-hull, polygon-union, or subpath-components fallback)
-    const contour = strategy === 'polygon-union'
-      ? extractOutlineContour(normSubpaths)
-      : concaveHullContour(normSubpaths.flat(), concavity);
-    if (contour.length === 0) return null;
+  // Step 4: simplify
+  const { points: simplified } = simplifyToTarget(
+    contour, simplifyFn, initialEpsilon, targetMin, targetMax,
+  );
+  if (simplified.length < 3) return null;
 
-    // Step 4: simplify
-    const { points: simplified } = simplifyToTarget(
-      contour, simplifyFn, initialEpsilon, targetMin, targetMax,
-    );
-    if (simplified.length < 3) return null;
-
-    // Step 5: build closed-loop edges
-    const edges = buildLoopEdges(simplified.length);
-    skeleton = { points: simplified as [number, number][], edges };
-  }
+  // Step 5: build closed-loop edges
+  const edges = buildLoopEdges(simplified.length);
+  const skeleton: Skeleton = { points: simplified as [number, number][], edges };
   skeletonCache.set(skelKey, skeleton);
   if (diskCacheDir) writeDiskCache(diskCacheDir, skelKey, skeleton);
 

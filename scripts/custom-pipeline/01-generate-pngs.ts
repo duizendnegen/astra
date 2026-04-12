@@ -30,7 +30,7 @@ const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const IMAGE_MODEL = 'google/gemini-2.5-flash-image';
 
 const PROMPT_TEMPLATE = (word: string, retryReason?: string) => {
-  const base = `Simple black line drawing of ${word} as an icon on white background. Single element. Clean outlines only, no fill, no shading, no text.`;
+  const base = `Simple black line drawing of "${word}" as an icon on white background. Single element, minimum amount of strokes. Clean outlines only, no fill, no shading, no text.`;
   return retryReason ? `${base}\nImportant: ${retryReason}` : base;
 };
 

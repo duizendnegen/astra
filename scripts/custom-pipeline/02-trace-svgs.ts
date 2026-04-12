@@ -1,15 +1,13 @@
 /**
  * 02-trace-svgs.ts
  *
- * Traces PNG images to SVG using the vtracer binary.
+ * Traces PNG images to SVG using Potrace.
  *
  * Usage:
  *   npx tsx 02-trace-svgs.ts
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pino from 'pino';
@@ -17,49 +15,12 @@ import * as potrace from 'potrace';
 import { readCsv, writeCsv } from './csv.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VTRACER_PATH = path.join(__dirname, 'bin', 'vtracer.exe');
 const DATA_DIR = path.resolve(__dirname, '..', '..', 'data', 'custom');
 
 const log = pino(
   { level: 'debug' },
   pino.transport({ target: 'pino-pretty', options: { colorize: true } }),
 );
-
-const execFileAsync = promisify(execFile);
-
-// vtracer flags per design spec D4
-const VTRACER_FLAGS = [
-  '--colormode', 'bw',
-  '--mode', 'polygon',
-  '--filter_speckle', '2',
-  '--corner_threshold', '45',
-  '--segment_length', '3.5',
-];
-
-const MAX_SUBPATHS = 500;
-
-/** Count the number of subpaths (M commands) in an SVG string. */
-function countSubpaths(svgContent: string): number {
-  // Each <path> element with a d attribute counts its M (moveto) commands as subpaths
-  const pathMatches = svgContent.matchAll(/ d="([^"]*)"/g);
-  let total = 0;
-  for (const match of pathMatches) {
-    const d = match[1];
-    // Count M/m commands = subpath starts
-    total += (d.match(/[Mm]/g) ?? []).length;
-  }
-  return total;
-}
-
-async function tracePng(pngPath: string, svgPath: string): Promise<number> {
-  const t0 = Date.now();
-  await execFileAsync(VTRACER_PATH, [
-    '--input', pngPath,
-    '--output', svgPath,
-    ...VTRACER_FLAGS,
-  ]);
-  return Date.now() - t0;
-}
 
 function traceWithPotrace(pngPath: string, svgPath: string): Promise<void> {
   // potrace uses jimp which requires forward slashes on Windows
@@ -74,10 +35,6 @@ function traceWithPotrace(pngPath: string, svgPath: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!existsSync(VTRACER_PATH)) {
-    throw new Error(`vtracer not found at ${VTRACER_PATH}. Run setup.ts first.`);
-  }
-
   mkdirSync(DATA_DIR, { recursive: true });
 
   const rows = readCsv();
@@ -94,34 +51,14 @@ async function main(): Promise<void> {
     const svgPath = path.join(DATA_DIR, `${row.word}-linedrawing.svg`);
     log.info({ word: row.word }, 'Tracing SVG');
 
+    const t0 = Date.now();
     try {
-      const ms = await tracePng(row.png_path, svgPath);
-      const svgContent = readFileSync(svgPath, 'utf-8');
-      const subpaths = countSubpaths(svgContent);
-
+      await traceWithPotrace(row.png_path, svgPath);
+      const ms = Date.now() - t0;
       row.trace_ms = String(ms);
       row.svg_path = svgPath;
-
-      // Run Potrace on the same PNG alongside vtracer
-      const potraceSvgPath = path.join(DATA_DIR, `${row.word}-linedrawing-potrace.svg`);
-      try {
-        await traceWithPotrace(row.png_path, potraceSvgPath);
-        row.potrace_svg_path = potraceSvgPath;
-        log.info({ word: row.word }, 'Potrace SVG written');
-      } catch (potraceErr) {
-        log.warn({ word: row.word, err: String(potraceErr) }, 'Potrace trace failed — continuing');
-        row.potrace_svg_path = '';
-      }
-
-      if (subpaths > MAX_SUBPATHS) {
-        row.status = 'retry';
-        row.retry_count = String(parseInt(row.retry_count || '0', 10) + 1);
-        writeCsv(rows);
-        log.warn({ word: row.word, subpaths, ms }, `SVG has ${subpaths} subpaths (>${MAX_SUBPATHS}) — marked for retry`);
-      } else {
-        writeCsv(rows);
-        log.info({ word: row.word, subpaths, ms }, 'SVG traced');
-      }
+      writeCsv(rows);
+      log.info({ word: row.word, ms }, 'SVG traced');
     } catch (err) {
       log.warn({ word: row.word, err: String(err) }, 'Trace failed');
     }

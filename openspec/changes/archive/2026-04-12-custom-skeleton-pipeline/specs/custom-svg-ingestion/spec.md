@@ -1,16 +1,5 @@
 ## ADDED Requirements
 
-### Requirement: Setup script downloads vtracer binary
-The repository SHALL include a setup script at `scripts/custom-pipeline/setup.ts` that downloads the vtracer Windows x64 binary from the pinned GitHub release URL and saves it to `scripts/custom-pipeline/bin/vtracer.exe`. The script SHALL verify the binary is executable before exiting. The `bin/` directory SHALL be listed in `.gitignore`.
-
-#### Scenario: Binary downloaded successfully
-- **WHEN** `setup.ts` runs and no binary exists at `bin/vtracer.exe`
-- **THEN** the binary is downloaded from the pinned release URL and saved to `bin/vtracer.exe`
-
-#### Scenario: Binary already present
-- **WHEN** `setup.ts` runs and `bin/vtracer.exe` already exists
-- **THEN** the script skips the download and exits with a message indicating the binary is already present
-
 ### Requirement: Word state tracked in CSV
 The pipeline SHALL use a CSV file at `scripts/custom-pipeline/words.csv` as the state machine for all words. Each row SHALL have columns: `word, style, status, png_path, svg_path, png_ms, trace_ms, skeleton_ms, retry_count`. The `style` column SHALL always be `linedrawing` in this iteration. Valid `status` values are: `new`, `proposed`, `accepted`, `retry`, `ingested`.
 
@@ -37,16 +26,16 @@ The `01-generate-pngs.ts` script SHALL process all rows with `status=new` or `st
 - **WHEN** the word is abstract (e.g. "longing" or "serendipity")
 - **THEN** the Gemini API returns a PNG (a visual metaphor); the script saves it without evaluating content
 
-### Requirement: SVG tracing via vtracer
-The `02-trace-svgs.ts` script SHALL process all rows with `status=proposed` that have a `png_path` but no `svg_path`. For each PNG it SHALL invoke the vtracer binary with flags `--colormode bw --mode polygon --filter_speckle 2 --corner_threshold 45 --segment_length 3.5`, writing the SVG to `data/custom/{word}-linedrawing.svg`. The script SHALL record `trace_ms` and update `svg_path` in the CSV. Rows with more than 500 subpaths in the resulting SVG SHALL be flagged with `status=retry` and `retry_count` incremented.
+### Requirement: SVG tracing via Potrace
+The `02-trace-svgs.ts` script SHALL process all rows with `status=proposed` that have a `png_path` but no `svg_path`. For each PNG it SHALL invoke Potrace, writing the resulting SVG to `data/custom/{word}-linedrawing.svg`. The script SHALL record `trace_ms` and update `svg_path` in the CSV.
 
 #### Scenario: SVG produced from PNG
 - **WHEN** `02-trace-svgs.ts` runs for a word with a valid PNG
 - **THEN** an SVG file is written to `data/custom/{word}-linedrawing.svg`, `trace_ms` is recorded, and `svg_path` is set in the CSV
 
-#### Scenario: Complex SVG flagged for retry
-- **WHEN** the traced SVG contains more than 500 subpaths
-- **THEN** the row `status` is set to `retry` and `retry_count` is incremented
+#### Scenario: Trace failure leaves word untraced
+- **WHEN** Potrace fails for a word
+- **THEN** `svg_path` remains empty, a warning is logged, and the word remains at `status=proposed`
 
 ### Requirement: Local vetting UI
 The `03-vet-server.ts` script SHALL start an Express HTTP server on `localhost:4242` that serves a single-page vetting UI. The UI SHALL display one card per `proposed` word showing: the PNG image, the rendered SVG, and the skeleton rendered as dots and edges on a canvas. The server SHALL expose `GET /api/words` returning all `proposed` rows and `POST /api/decide` accepting `{ word, decision: 'accepted' | 'retry' }` to update the CSV. The UI SHALL support keyboard shortcuts: `A` (accept), `R` (retry), `←`/`→` (navigate between words). The server SHALL import `svgToSkeleton` from `lambda/src/svg-to-skeleton.ts` to pre-compute skeleton previews at startup.
