@@ -2,7 +2,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { retrieveSkeleton, getSharedIndex, type MatchProvenance } from './retrieval.js';
+import { retrieveSkeleton, type MatchProvenance } from './retrieval.js';
 import type { Skeleton } from './core.js';
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -10,10 +10,6 @@ const ssmClient = new SSMClient({});
 
 const TABLE_NAME = process.env.TABLE_NAME!;
 const API_KEY_PARAM = process.env.OPENROUTER_API_KEY_PARAM!;
-const INDEX_PATH = process.env.INDEX_PATH; // optional override for S3-downloaded path
-
-// Open the SQLite index once at module load (warm invocations reuse the connection)
-const db = getSharedIndex(INDEX_PATH);
 
 interface CacheItem {
   word: string;
@@ -53,7 +49,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 
   const apiKey = await getApiKey();
-  const result = await retrieveSkeleton(word, db, apiKey);
+  const result = await retrieveSkeleton(word, apiKey);
 
   if (result.match === null) {
     return { statusCode: 422, headers, body: JSON.stringify({ error: 'No constellation found.' }) };
