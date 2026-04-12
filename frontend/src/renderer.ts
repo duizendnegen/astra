@@ -16,7 +16,7 @@ let camera: CameraState = { ...LANDING_CAMERA };
 let stars: Star[] = [];
 let constellation: MatchResult | null = null;
 let constellationAlpha: number = 1;
-let features: Features = { showLines: false, showStars: false };
+let features: Features = { showLines: false, showStars: false, renderMode: 'stars' };
 let constellationLines: ConstellationLines[] = [];
 let namedStars: NamedStar[] = [];
 
