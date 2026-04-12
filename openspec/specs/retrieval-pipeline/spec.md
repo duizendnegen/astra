@@ -14,19 +14,27 @@ Before querying the index the system SHALL normalise the input word: convert to 
 - **THEN** the normalised form has punctuation removed ("cat")
 
 ### Requirement: L1 direct embedding match
-The system SHALL embed the normalised word via OpenRouter `text-embedding-3-small` and query the SQLite `vec0` index using a KNN `MATCH` query for the nearest entries by cosine distance. The system SHALL post-filter results to `source = 'phosphor'` entries in application code. If the top Phosphor result's similarity exceeds `THRESHOLD_PHOSPHOR`, the match SHALL be accepted and L3/L4 SHALL be skipped.
+The system SHALL embed the normalised word via OpenRouter `text-embedding-3-small` and query the SQLite `vec0` index for the nearest entries by cosine distance. The sources queried by L1 SHALL be controlled by the `L1_SOURCES` environment variable (comma-separated list; default: `phosphor,custom`). The system SHALL apply a per-source similarity threshold: `phosphor` uses `THRESHOLD_PHOSPHOR` (default 0.80), `custom` uses `THRESHOLD_CUSTOM` (default 0.85). If the top result across all configured sources exceeds its source threshold, the match SHALL be accepted and L3/L4 SHALL be skipped.
 
-#### Scenario: High-confidence match accepted
-- **WHEN** the top Phosphor result has similarity above `THRESHOLD_PHOSPHOR`
+#### Scenario: High-confidence phosphor match accepted
+- **WHEN** the top result is a `phosphor` entry with similarity above `THRESHOLD_PHOSPHOR`
+- **THEN** the pipeline uses that entry's svg_path and does not call the LLM
+
+#### Scenario: High-confidence custom match accepted
+- **WHEN** the top result is a `custom` entry with similarity above `THRESHOLD_CUSTOM`
 - **THEN** the pipeline uses that entry's svg_path and does not call the LLM
 
 #### Scenario: Low-confidence result falls through
-- **WHEN** the top result has similarity below `THRESHOLD_PHOSPHOR`
+- **WHEN** all results are below their respective source thresholds
 - **THEN** the pipeline proceeds to L3 and L4 in parallel
 
-#### Scenario: ANN query used
-- **WHEN** the L1 index search runs
-- **THEN** the query uses `WHERE embedding MATCH ?` with `ORDER BY distance LIMIT 20` (ANN path), not a full table scan
+#### Scenario: L1_SOURCES restricts to phosphor only
+- **WHEN** `L1_SOURCES=phosphor` is set
+- **THEN** `custom` entries are not queried and the behaviour is identical to the pre-change pipeline
+
+#### Scenario: L1_SOURCES restricts to custom only
+- **WHEN** `L1_SOURCES=custom` is set
+- **THEN** only `custom` entries are searched in L1
 
 ### Requirement: L3 LLM concept mapping
 If L1 does not produce a confident match, the system SHALL call the LLM with the normalised word to obtain up to 5 single nouns that visually represent it (synonyms, categories, or iconic objects). The system SHALL embed each candidate noun and query the index; the best match across all candidates that exceeds `THRESHOLD_PHOSPHOR` SHALL be accepted. The L3 call SHALL be made with an `AbortSignal` so it can be cancelled when L4 wins the parallel race.
@@ -74,7 +82,7 @@ The L4 image model SHALL be configurable via the `L4_IMAGE_MODEL` environment va
 - **THEN** the pipeline returns `{ match: null, skeletons: [] }` and the caller returns HTTP 422
 
 ### Requirement: Match provenance recorded
-The system SHALL record which layer produced the match (`1`, `3`, or `4`), the matched entry id and source (`phosphor` or `generated`), the cosine similarity score, and the svg_path used. This provenance SHALL be stored in the DynamoDB cache entry and returned as part of the internal pipeline result for logging.
+The system SHALL record which layer produced the match (`1`, `3`, or `4`), the matched entry id and source (`phosphor`, `custom`, or `generated`), the cosine similarity score, and the svg_path used. This provenance SHALL be stored in the DynamoDB cache entry and returned as part of the internal pipeline result for logging.
 
 #### Scenario: Provenance available after L1 match
 - **WHEN** L1 produces an accepted match
