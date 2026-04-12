@@ -127,6 +127,8 @@ export class InfraStack extends cdk.Stack {
         ICONS_BUCKET_NAME: iconsBucket.bucketName,
         STARS_PATH: '/var/task/stars.json',
         NODE_ENV: 'production',
+        PINECONE_INDEX_NAME: 'astra-prod-icons',
+        PINECONE_HOST: 'https://astra-prod-icons-ylyik2p.svc.aped-4627-b74a.pinecone.io',
       },
     });
 
