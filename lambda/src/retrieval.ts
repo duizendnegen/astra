@@ -24,9 +24,12 @@ const log = createLogger('retrieval');
 
 // Calibrated for text-embedding-3-small with label-only embed text (icon name, no tags).
 // Exact-name queries score 1.0; direct semantic near-matches 0.60–0.92; noise < 0.45.
-// 0.60 chosen to pass near-synonyms (rubbish→trash=0.59) while rejecting short-word
-// false positives (bin→binary=0.587 would misfire at a lower threshold).
-export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.60');
+// L1 threshold (0.90) is strict: only very close direct hits pass to avoid false positives.
+// L3 threshold (0.80) is looser: the LLM already disambiguated meaning, so we accept
+// near-synonyms from the candidate list (e.g. banana→fruit→apple at 0.82 is fine,
+// banana→star-and-crescent at 0.689 is not).
+export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.90');
+export const THRESHOLD_PHOSPHOR_L3 = parseFloat(process.env.THRESHOLD_PHOSPHOR_L3 ?? '0.80');
 export const THRESHOLD_PHYLOPIC = parseFloat(process.env.THRESHOLD_PHYLOPIC ?? '0.55');
 export const THRESHOLD_CUSTOM = parseFloat(process.env.THRESHOLD_CUSTOM ?? '0.85');
 
@@ -217,9 +220,22 @@ function thresholdFor(source: string): number {
   return THRESHOLD_PHYLOPIC;
 }
 
+function thresholdForL3(source: string): number {
+  if (source === 'phosphor') return THRESHOLD_PHOSPHOR_L3;
+  if (source === 'custom') return THRESHOLD_CUSTOM;
+  return THRESHOLD_PHYLOPIC;
+}
+
 function bestAboveThreshold(results: SearchResult[]): SearchResult | null {
   for (const r of results) {
     if (r.similarity >= thresholdFor(r.source)) return r;
+  }
+  return null;
+}
+
+function bestAboveThresholdL3(results: SearchResult[]): SearchResult | null {
+  for (const r of results) {
+    if (r.similarity >= thresholdForL3(r.source)) return r;
   }
   return null;
 }
@@ -422,7 +438,7 @@ export async function retrieveSkeleton(
         const vec = vecs[i];
         if (!vec) continue;
         const results = await searchPinecone(vec);
-        const best = bestAboveThreshold(results);
+        const best = bestAboveThresholdL3(results);
         if (best) {
           log.info({ via: candidates[i], id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
           const svgContent = await fetchSvgFromS3(best.id);

@@ -7,14 +7,23 @@
 import { describe, it, expect } from 'vitest';
 import {
   THRESHOLD_PHOSPHOR,
+  THRESHOLD_PHOSPHOR_L3,
   THRESHOLD_CUSTOM,
   THRESHOLD_PHYLOPIC,
   normalise,
 } from '../retrieval.js';
 
 describe('threshold constants', () => {
-  it('THRESHOLD_PHOSPHOR defaults to 0.60', () => {
-    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.60);
+  it('THRESHOLD_PHOSPHOR defaults to 0.90', () => {
+    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.90);
+  });
+
+  it('THRESHOLD_PHOSPHOR_L3 defaults to 0.80', () => {
+    expect(THRESHOLD_PHOSPHOR_L3).toBeCloseTo(0.80);
+  });
+
+  it('THRESHOLD_PHOSPHOR is stricter than THRESHOLD_PHOSPHOR_L3', () => {
+    expect(THRESHOLD_PHOSPHOR).toBeGreaterThan(THRESHOLD_PHOSPHOR_L3);
   });
 
   it('THRESHOLD_CUSTOM defaults to 0.85', () => {
@@ -25,8 +34,8 @@ describe('threshold constants', () => {
     expect(THRESHOLD_PHYLOPIC).toBeCloseTo(0.55);
   });
 
-  it('THRESHOLD_CUSTOM is stricter than THRESHOLD_PHOSPHOR', () => {
-    expect(THRESHOLD_CUSTOM).toBeGreaterThan(THRESHOLD_PHOSPHOR);
+  it('THRESHOLD_CUSTOM is stricter than THRESHOLD_PHOSPHOR_L3', () => {
+    expect(THRESHOLD_CUSTOM).toBeGreaterThan(THRESHOLD_PHOSPHOR_L3);
   });
 
   it('THRESHOLD_PHOSPHOR is stricter than THRESHOLD_PHYLOPIC', () => {

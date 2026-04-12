@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { normalise, THRESHOLD_PHOSPHOR, THRESHOLD_CUSTOM, THRESHOLD_PHYLOPIC } from '../retrieval.js';
+import { normalise, THRESHOLD_PHOSPHOR, THRESHOLD_PHOSPHOR_L3, THRESHOLD_CUSTOM, THRESHOLD_PHYLOPIC } from '../retrieval.js';
 
 // ── S3 key derivation ─────────────────────────────────────────────────────────
 
@@ -36,16 +36,16 @@ describe('S3 key derivation', () => {
 
 describe('threshold boundary conditions', () => {
   it('phosphor score at exactly threshold is accepted', () => {
-    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.60);
-    expect(0.60 >= THRESHOLD_PHOSPHOR).toBe(true);
+    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.90);
+    expect(0.90 >= THRESHOLD_PHOSPHOR).toBe(true);
   });
 
   it('phosphor score just below threshold is rejected', () => {
-    expect(0.599 >= THRESHOLD_PHOSPHOR).toBe(false);
+    expect(0.899 >= THRESHOLD_PHOSPHOR).toBe(false);
   });
 
-  it('custom threshold is higher than phosphor (stricter)', () => {
-    expect(THRESHOLD_CUSTOM).toBeGreaterThan(THRESHOLD_PHOSPHOR);
+  it('L3 phosphor threshold is lower than L1 phosphor threshold', () => {
+    expect(THRESHOLD_PHOSPHOR_L3).toBeLessThan(THRESHOLD_PHOSPHOR);
   });
 
   it('phylopic threshold is lower than phosphor', () => {
