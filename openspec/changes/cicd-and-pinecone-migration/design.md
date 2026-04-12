@@ -55,17 +55,46 @@ Simultaneously, there is no automated deployment pipeline — `cdk deploy` is ru
 **Alternatives considered**:
 - Static `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` in GitHub Secrets — rejected: long-lived credentials, rotation risk
 
+### Local development uses Pinecone Local + MinIO via environment variables
+
+**Decision**: Local development (docker compose) runs `ghcr.io/pinecone-io/pinecone-local` and `minio` as additional services. The Lambda, build script, and any other consumers detect the local environment purely via environment variables — no code branching, no mock adapters.
+
+| Env var | Local value (`.env.local`) | Production value (Lambda env / CDK) |
+|---|---|---|
+| `PINECONE_HOST` | `http://pinecone-local:5081` | _(not set — SDK uses cloud)_ |
+| `PINECONE_API_KEY` | `local` | _(not set — read from SSM)_ |
+| `PINECONE_API_KEY_PARAM` | _(not set)_ | `/astra/pinecone-api-key` |
+| `AWS_ENDPOINT_URL` | `http://minio:9000` | _(not set — SDK uses AWS)_ |
+| `ICONS_BUCKET_NAME` | `astra-icons-local` | `astra-icons-{account}` |
+| `AWS_ACCESS_KEY_ID` | `minioadmin` | _(from OIDC role)_ |
+| `AWS_SECRET_ACCESS_KEY` | `minioadmin` | _(from OIDC role)_ |
+
+**SSM skip**: When `PINECONE_API_KEY` is set directly as an environment variable, the Lambda skips the SSM `GetParameter` call and uses the value directly. When it is absent, the existing SSM path is used. This keeps local dev credential-free (no AWS access needed).
+
+**`.env.local.example`**: A committed `.env.local.example` documents all variables needed for local development, with the correct local service values pre-filled and a note for any values that require the developer to supply (e.g. `OPENROUTER_API_KEY`).
+
+**Rationale**: Purely env-var-driven means the same docker-compose.yml works for both local and CI/CD test runs, with no conditional logic in application code beyond the SSM skip.
+
+**Alternatives considered**:
+- Separate `docker-compose.override.yml` for local services — rejected: user preference for single file, env-var split
+- In-memory mock adapters — rejected: diverges from real Pinecone cosine similarity behaviour
+
 ### Pinecone client initialised at module level
 
 **Decision**: Initialise the Pinecone client and index reference outside the Lambda handler function (module scope).
 
 **Rationale**: Standard Lambda best practice. The client is reused across warm invocations, avoiding repeated initialisation overhead on every request.
 
-### Index rebuild is not a CI/CD step
+### Index rebuild runs incrementally in the deploy workflow
 
-**Decision**: `scripts/build-index.ts` is run manually (or on a separate schedule) and is not triggered by the deploy workflow.
+**Decision**: `scripts/build-index.ts` is invoked by the deploy workflow before `cdk deploy`, using the incremental guard to skip entries that already exist in Pinecone.
 
-**Rationale**: Embedding generation costs money (OpenRouter API calls) and can take minutes. The vector store and S3 bucket are persistent state — like DynamoDB — and do not need to be rebuilt on every deploy. The Lambda is independent of the index contents; L1 simply degrades gracefully if the index is empty.
+**Rationale**: The incremental guard makes the script idempotent — it only calls the embeddings API for icons not yet present in the index. The cost concern (OpenRouter calls) disappears because re-runs are free for existing entries. Running it in CI/CD ensures production is never behind on new icons added to the source sets, without requiring manual intervention.
+
+**Implementation**: The deploy workflow passes `PINECONE_API_KEY` from a GitHub Secret and uses the deploy OIDC role (which has `s3:PutObject` on the icons bucket) to write new entries. The Pinecone index name and icons bucket name are passed as workflow environment variables.
+
+**Alternatives considered**:
+- Manual run only — rejected: requires developer remembering to run it; easy to forget after adding new icon sources
 
 ## Risks / Trade-offs
 

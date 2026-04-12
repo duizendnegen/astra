@@ -16,18 +16,26 @@ The repository SHALL include a GitHub Actions workflow at `.github/workflows/ci.
 - **THEN** the CI workflow fails and the pull request is blocked
 
 ### Requirement: Deploy workflow on main
-The repository SHALL include a GitHub Actions workflow at `.github/workflows/deploy.yml` that triggers on push to `main`. The workflow SHALL run tests (same as the CI workflow), build the frontend with `npm run build`, and deploy with `cdk deploy --require-approval never` using the deploy AWS OIDC role.
+The repository SHALL include a GitHub Actions workflow at `.github/workflows/deploy.yml` that triggers on push to `main`. The workflow SHALL, in order: run tests (same as the CI workflow); run `scripts/build-index.ts` incrementally (skipping entries already in the Pinecone index, using `PINECONE_API_KEY` from a GitHub Secret); build the frontend with `npm run build`; and deploy with `cdk deploy --require-approval never` using the deploy AWS OIDC role.
 
 #### Scenario: Successful merge deploys to production
 - **WHEN** a commit is merged to `main`
-- **THEN** the deploy workflow runs tests, builds the frontend, and executes `cdk deploy`
+- **THEN** the deploy workflow runs tests, runs build-index (incrementally), builds the frontend, and executes `cdk deploy`
 
 #### Scenario: Deploy is blocked on test failure
 - **WHEN** any test fails during the deploy workflow
-- **THEN** `cdk deploy` is NOT executed and the workflow fails
+- **THEN** `scripts/build-index.ts` and `cdk deploy` are NOT executed and the workflow fails
+
+#### Scenario: Build-index is idempotent in CI/CD
+- **WHEN** the deploy workflow runs and all icons already exist in the Pinecone index
+- **THEN** `scripts/build-index.ts` exits successfully without making any embeddings API calls or S3 writes
+
+#### Scenario: New icons are indexed before deploy
+- **WHEN** new icon source entries are present that do not yet exist in the Pinecone index
+- **THEN** `scripts/build-index.ts` embeds and uploads them before `cdk deploy` runs
 
 ### Requirement: GitHub OIDC authentication — no stored AWS credentials
-Both workflows SHALL authenticate to AWS using GitHub's OIDC provider via `aws-actions/configure-aws-credentials`. No AWS access keys or secrets SHALL be stored in GitHub Secrets. The deploy workflow SHALL assume a deploy IAM role; the CI workflow SHALL assume a read-only IAM role. Both roles are provisioned by the CDK stack.
+Both workflows SHALL authenticate to AWS using GitHub's OIDC provider via `aws-actions/configure-aws-credentials`. No AWS access keys or secrets SHALL be stored in GitHub Secrets. The deploy workflow SHALL assume a deploy IAM role; the CI workflow SHALL assume a read-only IAM role. Both roles are provisioned by the CDK stack. The `PINECONE_API_KEY` GitHub Secret is a third-party service key (not an AWS credential) and is required for the build-index step in the deploy workflow.
 
 #### Scenario: No static credentials in repository
 - **WHEN** the repository secrets are inspected

@@ -8,7 +8,7 @@ The CDK stack SHALL provision an IAM OIDC Identity Provider for `token.actions.g
 - **THEN** an IAM OIDC provider for `token.actions.githubusercontent.com` exists in the AWS account
 
 ### Requirement: GitHub Actions deploy IAM role
-The CDK stack SHALL provision an IAM role that GitHub Actions deploy workflows can assume via OIDC. The role's trust policy SHALL be scoped to tokens issued for the `refs/heads/main` ref of the `pepijn/astra` repository. The role SHALL have permissions sufficient to execute `cdk deploy`: CloudFormation stack operations, S3 bucket and object management, Lambda function updates, API Gateway changes, CloudFront invalidation, and reading SSM parameters.
+The CDK stack SHALL provision an IAM role that GitHub Actions deploy workflows can assume via OIDC. The role's trust policy SHALL be scoped to tokens issued for the `refs/heads/main` ref of the `pepijn/astra` repository. The role SHALL have permissions sufficient to: execute `cdk deploy` (CloudFormation stack operations, S3 bucket and object management, Lambda function updates, API Gateway changes, CloudFront invalidation, reading SSM parameters); and run `scripts/build-index.ts` (`s3:PutObject` on the icons bucket, `ssm:GetParameter` for the Pinecone key parameter).
 
 #### Scenario: Deploy role assumable from main branch only
 - **WHEN** the GitHub Actions deploy workflow on `main` calls `AssumeRoleWithWebIdentity`
@@ -17,6 +17,10 @@ The CDK stack SHALL provision an IAM role that GitHub Actions deploy workflows c
 #### Scenario: Deploy role denied on non-main branches
 - **WHEN** a workflow on a non-main branch attempts to assume the deploy role
 - **THEN** the `AssumeRoleWithWebIdentity` call is rejected by STS
+
+#### Scenario: Deploy role can write to icons bucket
+- **WHEN** the deploy workflow runs `scripts/build-index.ts` and uploads a new SVG to S3
+- **THEN** the `PutObject` call on the icons bucket succeeds
 
 ### Requirement: GitHub Actions read-only IAM role
 The CDK stack SHALL provision a second IAM role for PR CI workflows. This role SHALL be assumable by any ref in the `pepijn/astra` repository and SHALL have read-only permissions sufficient to run `cdk diff`: `cloudformation:DescribeStacks`, `cloudformation:GetTemplate`, SSM `GetParameter`, and related read operations.

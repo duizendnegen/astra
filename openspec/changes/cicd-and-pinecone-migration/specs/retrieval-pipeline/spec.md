@@ -14,3 +14,11 @@ The system SHALL embed the normalised word via OpenRouter `text-embedding-3-smal
 #### Scenario: Pinecone client reused across Lambda invocations
 - **WHEN** the Lambda handler is invoked on a warm instance
 - **THEN** the Pinecone client and index reference initialised at module level are reused without re-initialisation
+
+#### Scenario: Local mode uses Pinecone emulator and MinIO
+- **WHEN** `PINECONE_HOST` is set (e.g. `http://pinecone-local:5081`) and `AWS_ENDPOINT_URL` is set (e.g. `http://minio:9000`)
+- **THEN** the Lambda queries the local Pinecone emulator and fetches SVG paths from MinIO without contacting production services
+
+#### Scenario: Local mode skips SSM lookup
+- **WHEN** `PINECONE_API_KEY` is set directly as an environment variable
+- **THEN** the Lambda uses it without calling SSM `GetParameter`, enabling local development without AWS credentials

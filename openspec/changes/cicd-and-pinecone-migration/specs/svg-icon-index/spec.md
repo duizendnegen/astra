@@ -7,7 +7,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Index build script
-The repository SHALL include a script at `scripts/build-index.ts` that downloads all Phosphor icons (and optionally Phylopic silhouettes), generates embeddings for their labels, upserts vectors into the Pinecone index, and uploads SVG path strings as objects to the icons S3 bucket. The script SHALL read `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, and `ICONS_BUCKET_NAME` from environment variables.
+The repository SHALL include a script at `scripts/build-index.ts` that downloads all Phosphor icons (and optionally Phylopic silhouettes), generates embeddings for their labels, upserts vectors into the Pinecone index, and uploads SVG path strings as objects to the icons S3 bucket. The script SHALL read `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, and `ICONS_BUCKET_NAME` from environment variables. When `PINECONE_HOST` is set, the Pinecone client SHALL use it as a custom host (enabling local emulator). When `AWS_ENDPOINT_URL` is set, the S3 client SHALL use it as the endpoint (enabling MinIO locally). This makes the script usable in both local development and CI/CD without code changes.
 
 #### Scenario: Script runs to completion
 - **WHEN** `npx tsx scripts/build-index.ts` is run with valid API keys and AWS credentials
@@ -16,6 +16,10 @@ The repository SHALL include a script at `scripts/build-index.ts` that downloads
 #### Scenario: Incremental run skips existing entries
 - **WHEN** the script is run and a vector with the given id already exists in the Pinecone index
 - **THEN** that entry is skipped and not re-fetched or re-embedded
+
+#### Scenario: Local mode uses Pinecone emulator and MinIO
+- **WHEN** `PINECONE_HOST=http://pinecone-local:5081` and `AWS_ENDPOINT_URL=http://minio:9000` are set
+- **THEN** the script writes vectors to the local Pinecone emulator and SVG objects to MinIO without contacting production services
 
 ### Requirement: Embeddings
 The build script SHALL generate a 1536-dimensional float32 embedding for each entry by sending its label (and up to 5 tags) to `POST https://openrouter.ai/api/v1/embeddings` with `model: "openai/text-embedding-3-small"`. Embeddings SHALL be batched (up to 100 per request) to minimise API calls. Each embedding SHALL be upserted into the Pinecone index with metadata fields: `source`, `label`, `tags`.
