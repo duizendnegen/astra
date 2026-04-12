@@ -36,12 +36,12 @@ describe('S3 key derivation', () => {
 
 describe('threshold boundary conditions', () => {
   it('phosphor score at exactly threshold is accepted', () => {
-    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.80);
-    expect(0.80 >= THRESHOLD_PHOSPHOR).toBe(true);
+    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.60);
+    expect(0.60 >= THRESHOLD_PHOSPHOR).toBe(true);
   });
 
   it('phosphor score just below threshold is rejected', () => {
-    expect(0.799 >= THRESHOLD_PHOSPHOR).toBe(false);
+    expect(0.599 >= THRESHOLD_PHOSPHOR).toBe(false);
   });
 
   it('custom threshold is higher than phosphor (stricter)', () => {

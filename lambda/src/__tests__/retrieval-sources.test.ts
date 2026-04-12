@@ -13,8 +13,8 @@ import {
 } from '../retrieval.js';
 
 describe('threshold constants', () => {
-  it('THRESHOLD_PHOSPHOR defaults to 0.80', () => {
-    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.80);
+  it('THRESHOLD_PHOSPHOR defaults to 0.60', () => {
+    expect(THRESHOLD_PHOSPHOR).toBeCloseTo(0.60);
   });
 
   it('THRESHOLD_CUSTOM defaults to 0.85', () => {

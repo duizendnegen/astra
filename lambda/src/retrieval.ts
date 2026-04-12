@@ -82,7 +82,7 @@ const _pineconeReady: Promise<void> = (async () => {
   try {
     let apiKey = process.env.PINECONE_API_KEY;
     if (!apiKey) {
-      const ssm = new SSMClient({});
+      const ssm = new SSMClient({ region: process.env.AWS_REGION ?? 'eu-central-1' });
       const res = await ssm.send(new GetParameterCommand({
         Name: process.env.PINECONE_API_KEY_PARAM!,
         WithDecryption: true,
