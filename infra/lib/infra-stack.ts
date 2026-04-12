@@ -145,7 +145,7 @@ export class InfraStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
-      path: '/api/skeleton',
+      path: '/api/constellation',
       methods: [apigateway.HttpMethod.POST],
       integration: new apigatewayIntegrations.HttpLambdaIntegration(
         'SkeletonIntegration',
