@@ -11,7 +11,7 @@ out/
 .env
 .env.local
 .env.*.local
-.claude/settings.local.json
+.claude/
 
 # Data / large files (keep .gitkeep placeholder files)
 data/
@@ -20,6 +20,9 @@ data/l5-cache/
 *.csv
 *.json.gz
 .playwright-mcp/
+
+# Custom pipeline downloaded binaries
+scripts/custom-pipeline/bin/
 
 # Test harness reports (fixtures are committed; generated reports are not)
 test-harness/reports/
