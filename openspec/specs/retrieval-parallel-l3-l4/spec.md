@@ -31,12 +31,12 @@ The system SHALL cancel L3 only when BOTH of the following are true: (a) at leas
 - **THEN** L3 is not cancelled; it continues until it resolves or the timer fires
 
 ### Requirement: L4 model configurable via env var
-The system SHALL use the model specified by the `L4_MODEL` environment variable for L4 SVG generation. If `L4_MODEL` is not set, the system SHALL default to `google/gemini-2.5-flash`.
+The system SHALL use the image generation model specified by the `L4_IMAGE_MODEL` environment variable for L4 image generation. If `L4_IMAGE_MODEL` is not set, the system SHALL default to `google/gemini-2.5-flash-image`.
 
-#### Scenario: Custom L4 model used
-- **WHEN** `L4_MODEL=google/gemini-2.0-flash-001` is set in the environment
-- **THEN** L4 SVG generation calls use `google/gemini-2.0-flash-001` via OpenRouter
+#### Scenario: Custom L4 image model used
+- **WHEN** `L4_IMAGE_MODEL=google/gemini-2.0-flash-exp` is set in the environment
+- **THEN** L4 image generation calls use that model via OpenRouter
 
 #### Scenario: Default model used
-- **WHEN** `L4_MODEL` is not set
-- **THEN** L4 SVG generation uses `google/gemini-2.5-flash`
+- **WHEN** `L4_IMAGE_MODEL` is not set
+- **THEN** L4 image generation uses `google/gemini-2.5-flash-image`

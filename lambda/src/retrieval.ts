@@ -11,6 +11,7 @@
 
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import * as potrace from 'potrace';
 import type { Skeleton } from './core.js';
 import { svgToSkeleton, rdpSimplify, visvalingamWhyatt, type SimplifyFn } from './svg-to-skeleton.js';
 import { createLogger } from './logger.js';
@@ -22,10 +23,18 @@ const log = createLogger('retrieval');
 
 export const THRESHOLD_PHOSPHOR = parseFloat(process.env.THRESHOLD_PHOSPHOR ?? '0.80');
 export const THRESHOLD_PHYLOPIC = parseFloat(process.env.THRESHOLD_PHYLOPIC ?? '0.55');
+export const THRESHOLD_CUSTOM = parseFloat(process.env.THRESHOLD_CUSTOM ?? '0.85');
+
+// Sources to query in L1. Comma-separated; default includes phosphor and custom.
+// Set L1_SOURCES=phosphor to restore pre-custom behaviour exactly.
+const L1_SOURCES: string[] = (process.env.L1_SOURCES ?? 'phosphor,custom')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const EMBED_MODEL = 'openai/text-embedding-3-small';
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
-const L4_MODEL = process.env.L4_MODEL ?? 'google/gemini-2.5-flash';
+const L4_IMAGE_MODEL = process.env.L4_IMAGE_MODEL ?? 'google/gemini-2.5-flash-image';
 
 // Disk cache for L5 sub-steps during local development.
 // Resolves relative to the working directory (expected: lambda/ when running dev:local).
@@ -36,7 +45,7 @@ const L5_DISK_CACHE = process.env.NODE_ENV !== 'production'
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface MatchProvenance {
-  source: 'phosphor' | 'phylopic' | 'llm';
+  source: 'phosphor' | 'phylopic' | 'custom' | 'generated';
   id: string;
   similarity: number;
   layer: 1 | 3 | 4;
@@ -150,27 +159,26 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return denom < 1e-10 ? 0 : dot / denom;
 }
 
-// Pre-compiled statement cached at module level for efficiency
+// Pre-compiled statement cached at module level for efficiency.
+// Invalidated when L1_SOURCES changes (static at module load, so no invalidation needed).
 let _searchStmt: ReturnType<Database.Database['prepare']> | null = null;
 function getSearchStmt(db: Database.Database) {
   if (!_searchStmt) {
-    // Phosphor-only search for now. Phylopic SVGs are filled silhouettes that produce
-    // poor skeletons with the current L5 extractor (designed for stroke-based icons).
-    // Re-enable Phylopic once L5 handles filled paths (stroke extraction / contour tracing).
-    // vec_distance_cosine() returns L2 distance; sort ascending in JS and convert to similarity.
+    // Build WHERE clause from L1_SOURCES. Source names are validated as alphanumeric
+    // at parse time so interpolation is safe (no SQL injection risk).
+    // vec_distance_cosine() returns L2 distance; sorted ascending in JS then converted to similarity.
     //
-    // Note: vec0 ANN (MATCH) was investigated but the single shared index (phosphor ~1512 +
-    // phylopic ~5000) causes corpus-mixing — top-k from the full index is dominated by phylopic
-    // entries, so the best phosphor match often falls outside top-20 (even top-200). A separate
-    // phosphor_vectors table would solve this but requires a schema migration. Full-scan is
-    // acceptable here: L1 is only on the critical path for hits, and L3/L4 now run in parallel
-    // so the miss-path latency is no longer dominated by L1. See l1-ann-investigation.md.
+    // Note: vec0 ANN (MATCH) was investigated but corpus-mixing across sources caused issues.
+    // Full-scan is acceptable: L1 is only on the critical path for hits, and L3/L4 run in parallel.
+    // See l1-ann-investigation.md.
+    const validSources = L1_SOURCES.filter((s) => /^[a-z0-9_]+$/i.test(s));
+    const inClause = validSources.map((s) => `'${s}'`).join(', ');
     _searchStmt = db.prepare(`
       SELECT v.id, vec_distance_cosine(v.embedding, vec_f32(:buf)) AS dist,
              e.source, e.label, e.tags, e.svg_path
       FROM vectors v
       JOIN entries e ON e.id = v.id
-      WHERE e.source = 'phosphor'
+      WHERE e.source IN (${inClause})
     `);
   }
   return _searchStmt;
@@ -195,7 +203,9 @@ function searchIndex(db: Database.Database, queryVec: Float32Array, topK = 5): S
 }
 
 function thresholdFor(source: string): number {
-  return source === 'phosphor' ? THRESHOLD_PHOSPHOR : THRESHOLD_PHYLOPIC;
+  if (source === 'phosphor') return THRESHOLD_PHOSPHOR;
+  if (source === 'custom') return THRESHOLD_CUSTOM;
+  return THRESHOLD_PHYLOPIC;
 }
 
 function bestAboveThreshold(results: SearchResult[]): SearchResult | null {
@@ -236,38 +246,70 @@ async function l3Candidates(word: string, apiKey: string, signal?: AbortSignal):
   }
 }
 
-// ── L4 — LLM SVG generation ───────────────────────────────────────────────────
+// ── L4 — Image generation + Potrace tracing ───────────────────────────────────
 
-const L4_PROMPT = (word: string) =>
-  `Draw "${word} as an SVG". No colours.\nReturn ONLY the complete <svg>...</svg> element. No explanation, no markdown.`;
+const L4_IMAGE_PROMPT = (word: string) =>
+  `Simple black line drawing of "${word}" as an icon on white background. Single element, minimum amount of strokes. Clean outlines only, no fill, no shading, no text.`;
 
-async function l4GenerateSvg(word: string, apiKey: string, signal?: AbortSignal): Promise<string | null> {
+/**
+ * Generate a PNG image for `word` via Gemini image gen on OpenRouter.
+ * Returns a Buffer of the PNG or null on failure.
+ */
+export async function l4GenerateFromImage(word: string, apiKey: string, signal?: AbortSignal): Promise<Buffer | null> {
   try {
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: L4_MODEL,
-        messages: [{ role: 'user', content: L4_PROMPT(word) }],
+        model: L4_IMAGE_MODEL,
+        messages: [{ role: 'user', content: L4_IMAGE_PROMPT(word) }],
       }),
       signal,
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      log.warn({ status: res.status, model: L4_MODEL, body: body.slice(0, 200) }, 'L4 HTTP error');
+      log.warn({ status: res.status, model: L4_IMAGE_MODEL, body: body.slice(0, 200) }, 'L4 image gen HTTP error');
       return null;
     }
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const content = data.choices?.[0]?.message?.content ?? '';
-    // Extract SVG block
-    const m = content.match(/<svg[\s\S]*?<\/svg>/i);
-    return m?.[0] ?? null;
+    const data = (await res.json()) as {
+      choices?: {
+        message?: {
+          content?: unknown;
+          images?: { type: string; image_url?: { url: string } }[];
+        };
+      }[];
+    };
+    const msg = data.choices?.[0]?.message;
+    for (const img of msg?.images ?? []) {
+      if (img.image_url?.url) {
+        const match = img.image_url.url.match(/^data:image\/[^;]+;base64,(.+)$/);
+        if (match) return Buffer.from(match[1], 'base64');
+      }
+    }
+    log.warn({ msgKeys: JSON.stringify(Object.keys(msg ?? {})) }, 'L4 image gen: no image in response');
+    return null;
   } catch (err) {
     if ((err as { name?: string }).name !== 'AbortError') {
-      log.warn({ err }, 'L4 fetch error');
+      log.warn({ err }, 'L4 image gen fetch error');
     }
     return null;
   }
+}
+
+/**
+ * Trace a PNG buffer with Potrace, returning an SVG string or null on failure.
+ */
+export function traceWithPotrace(pngBuffer: Buffer): Promise<string | null> {
+  return new Promise((resolve) => {
+    potrace.trace(pngBuffer, (err: Error | null, svg: string) => {
+      if (err) {
+        log.warn({ err }, 'Potrace trace failed');
+        resolve(null);
+      } else {
+        resolve(svg);
+      }
+    });
+  });
 }
 
 // ── L5 — SVG → Skeleton ────────────────────────────────────────────────────────
@@ -277,7 +319,7 @@ const SIMPLIFIERS: Record<string, SimplifyFn> = {
   visvalingam: visvalingamWhyatt,
 };
 
-export function svgToSkeletonWithOpts(svgOrPath: string, source?: string): Skeleton | null {
+export function svgToSkeletonWithOpts(svgOrPath: string): Skeleton | null {
   const algorithmName = process.env.SIMPLIFY_ALGORITHM ?? 'rdp';
   const simplifyFn = SIMPLIFIERS[algorithmName] ?? rdpSimplify;
   const epsilon = parseFloat(process.env.SIMPLIFY_EPSILON ?? '0.02');
@@ -287,7 +329,6 @@ export function svgToSkeletonWithOpts(svgOrPath: string, source?: string): Skele
     algorithmName,
     epsilon,
     diskCacheDir: L5_DISK_CACHE,
-    strategy: source === 'phosphor' ? 'polygon-union' : 'concave-hull',
   });
 }
 
@@ -312,12 +353,12 @@ export async function retrieveSkeleton(
     const best = bestAboveThreshold(results);
     if (best) {
       log.info({ id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
-      const skeleton = svgToSkeletonWithOpts(best.entry.svg_path, best.entry.source);
+      const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
       if (skeleton) {
         log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
         return {
           match: {
-            source: best.entry.source as 'phosphor' | 'phylopic',
+            source: best.entry.source as 'phosphor' | 'phylopic' | 'custom',
             id: best.entry.id,
             similarity: best.similarity,
             layer: 1,
@@ -347,19 +388,23 @@ export async function retrieveSkeleton(
 
   // L4 task: runs concurrently; sets flags and stores result for use if L3 misses
   const l4Task = (async () => {
-    const svg = await l4GenerateSvg(normalised, apiKey, l4Controller.signal);
+    const pngBuffer = await l4GenerateFromImage(normalised, apiKey, l4Controller.signal);
     l4Done = true;
     if (timerFired) l3Controller.abort();
-    if (svg) {
-      log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 SVG generated');
-      const skeleton = svgToSkeletonWithOpts(svg);
-      if (skeleton) {
-        l4Result = {
-          match: { source: 'llm', id: `llm:${normalised}`, similarity: 0, layer: 4, svgPath: svg },
-          skeletons: [skeleton],
-        };
-      } else {
-        log.warn({ durationMs: Date.now() - t0 }, 'L4 skeleton null');
+    if (pngBuffer) {
+      log.debug({ bytes: pngBuffer.length, durationMs: Date.now() - t0 }, 'L4 PNG generated');
+      const svg = await traceWithPotrace(pngBuffer);
+      if (svg) {
+        log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 Potrace SVG traced');
+        const skeleton = svgToSkeletonWithOpts(svg);
+        if (skeleton) {
+          l4Result = {
+            match: { source: 'generated', id: `generated:${normalised}`, similarity: 0, layer: 4, svgPath: svg },
+            skeletons: [skeleton],
+          };
+        } else {
+          log.warn({ durationMs: Date.now() - t0 }, 'L4 skeleton null');
+        }
       }
     }
   })();
@@ -379,12 +424,12 @@ export async function retrieveSkeleton(
         const best = bestAboveThreshold(results);
         if (best) {
           log.info({ via: candidates[i], id: best.entry.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
-          const skeleton = svgToSkeletonWithOpts(best.entry.svg_path, best.entry.source);
+          const skeleton = svgToSkeletonWithOpts(best.entry.svg_path);
           if (skeleton) {
             clearTimeout(timer);
             l4Controller.abort();
             return {
-              match: { source: best.entry.source as 'phosphor' | 'phylopic', id: best.entry.id, similarity: best.similarity, layer: 3, svgPath: best.entry.svg_path },
+              match: { source: best.entry.source as 'phosphor' | 'phylopic' | 'custom', id: best.entry.id, similarity: best.similarity, layer: 3, svgPath: best.entry.svg_path },
               skeletons: [skeleton],
             };
           }

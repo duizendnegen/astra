@@ -15,7 +15,6 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import concaveman from 'concaveman';
 import polygonClipping from 'polygon-clipping';
 import type { Skeleton } from './core.js';
 
@@ -32,8 +31,6 @@ export interface SvgToSkeletonOptions {
   targetMin?: number;        // Min points (default 15)
   targetMax?: number;        // Max points (default 40)
   diskCacheDir?: string;     // Optional disk cache directory for dev
-  concavity?: number;        // Concave hull concavity (default 3.0; higher = more convex)
-  strategy?: 'concave-hull' | 'polygon-union';  // Contour extraction strategy (default: 'concave-hull')
 }
 
 interface SampledPath {
@@ -281,23 +278,6 @@ function samplePath(svgPathD: string): SampledPath {
   return { subpaths };
 }
 
-// ── Outline contour extraction ────────────────────────────────────────────────
-
-/** Compute the concave hull of a flat point cloud and return the outer contour.
- *  Returns [] for fewer than 3 points (degenerate input). */
-export function concaveHullContour(points: Point[], concavity: number): Point[] {
-  if (points.length < 3) return [];
-  // concaveman returns a closed ring where the last point equals the first
-  const ring = concaveman(points as number[][], concavity, 0) as Point[];
-  // Drop the closing duplicate
-  if (ring.length > 1) {
-    const last = ring[ring.length - 1];
-    const first = ring[0];
-    if (last[0] === first[0] && last[1] === first[1]) return ring.slice(0, -1);
-  }
-  return ring;
-}
-
 // ── Polygon-union contour extraction ─────────────────────────────────────────
 
 function polygonArea(ring: Point[]): number {
@@ -521,12 +501,11 @@ export function svgToSkeleton(
     targetMin = 15,
     targetMax = 40,
     diskCacheDir,
-    concavity = 3.0,
-    strategy = 'concave-hull',
   } = opts;
 
   const hash = svgHash(svgOrPath);
-  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__${strategy}__${concavity}__outline-v3`;
+  // Cache key uses polygon-union strategy implicitly
+  const skelKey = `${hash}__${algorithmName}__${initialEpsilon}__polygon-union__outline-v3`;
 
   // Check skeleton cache
   if (skeletonCache.has(skelKey)) return skeletonCache.get(skelKey)!;
@@ -567,10 +546,8 @@ export function svgToSkeleton(
 
   const normSubpaths = sampled.subpaths.map((pts) => normalisePoints(pts, vb!));
 
-  // Step 3: extract outer boundary contour
-  const contour = strategy === 'polygon-union'
-    ? extractOutlineContour(normSubpaths)
-    : concaveHullContour(normSubpaths.flat(), concavity);
+  // Step 3: extract outer contour via polygon-union
+  const contour = extractOutlineContour(normSubpaths);
   if (contour.length === 0) return null;
 
   // Step 4: simplify
@@ -581,7 +558,6 @@ export function svgToSkeleton(
 
   // Step 5: build closed-loop edges
   const edges = buildLoopEdges(simplified.length);
-
   const skeleton: Skeleton = { points: simplified as [number, number][], edges };
   skeletonCache.set(skelKey, skeleton);
   if (diskCacheDir) writeDiskCache(diskCacheDir, skelKey, skeleton);
