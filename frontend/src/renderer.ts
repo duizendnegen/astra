@@ -1,5 +1,5 @@
 import * as d3 from 'd3';
-import type { Star, CameraState, MatchResult, ConstellationLines, NamedStar } from './types';
+import type { Star, CameraState, MatchResult, ConstellationLines } from './types';
 import { LANDING_CAMERA, RESULT_FOV, RESULT_FOV_MOBILE } from './types';
 import type { Features } from './features';
 
@@ -16,9 +16,8 @@ let camera: CameraState = { ...LANDING_CAMERA };
 let stars: Star[] = [];
 let constellation: MatchResult | null = null;
 let constellationAlpha: number = 1;
-let features: Features = { showLines: false, showStars: false, renderMode: 'stars', showConstellationImage: false, showAssociation: false, showStarLabels: false };
+let features: Features = { showLines: false, renderMode: 'stars', showConstellationImage: false, showAssociation: false, showStarLabels: false };
 let constellationLines: ConstellationLines[] = [];
-let namedStars: NamedStar[] = [];
 let starNameMap: Map<number, string> = new Map();
 
 // ── Projection helpers ────────────────────────────────────────────────────
@@ -167,8 +166,8 @@ function drawConstellation(): void {
     ctx.globalAlpha = 1;
   }
 
-  // Star name labels (constellation mode only)
-  if (features.showStars === 'constellation') {
+  // Star name labels
+  if (features.showStarLabels) {
     ctx.font = '11px sans-serif';
     ctx.fillStyle = '#ccd9ff';
     for (let idx = 0; idx < constellationStars.length; idx++) {
@@ -239,27 +238,12 @@ function drawIAULines(): void {
   ctx.globalAlpha = 1;
 }
 
-function drawNamedStars(): void {
-  if (features.showStars !== 'named' || namedStars.length === 0) return;
-  ctx.font = '11px sans-serif';
-  ctx.fillStyle = '#ccd9ff';
-  ctx.globalAlpha = 0.85 * constellationAlpha;
-  for (const star of namedStars) {
-    const pt = project(star.ra, star.dec);
-    if (!pt) continue;
-    if (pt[0] < 0 || pt[0] > canvas.width || pt[1] < 0 || pt[1] > canvas.height) continue;
-    ctx.fillText(star.name, pt[0] + 6, pt[1] - 4);
-  }
-  ctx.globalAlpha = 1;
-}
-
 export function draw(): void {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#0c1324';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawStars();
   drawIAULines();
-  drawNamedStars();
   drawConstellation();
 }
 
@@ -337,10 +321,17 @@ export function setConstellation(result: MatchResult | null): void {
   constellation = result;
 }
 
-export function setOverlayData(f: Features, lines: ConstellationLines[], named: NamedStar[], nameMap: Map<number, string> = new Map()): void {
+export function setOverlayData(f: Features, lines: ConstellationLines[], nameMap: Map<number, string> = new Map()): void {
   features = f;
   constellationLines = lines;
-  namedStars = named;
+  starNameMap = nameMap;
+}
+
+export function setFeatures(f: Features): void {
+  features = f;
+}
+
+export function setStarNames(nameMap: Map<number, string>): void {
   starNameMap = nameMap;
 }
 

@@ -86,21 +86,7 @@ describe('buildShareUrl', () => {
     vi.unstubAllGlobals();
   });
 
-  it('preserves show_stars and show_lines when active', () => {
-    vi.stubGlobal('location', {
-      href: 'http://localhost/?show_stars=1&show_lines=1',
-      search: '?show_stars=1&show_lines=1',
-    });
-
-    const url = buildShareUrl(mockState);
-    const params = new URL(url).searchParams;
-
-    expect(params.get('show_stars')).toBe('1');
-    expect(params.get('show_lines')).toBe('1');
-    expect(params.has('c')).toBe(true);
-  });
-
-  it('omits flag params when not present in current location', () => {
+  it('produces a URL with only the ?c= param', () => {
     vi.stubGlobal('location', {
       href: 'http://localhost/',
       search: '',
@@ -109,8 +95,7 @@ describe('buildShareUrl', () => {
     const url = buildShareUrl(mockState);
     const params = new URL(url).searchParams;
 
-    expect(params.has('show_stars')).toBe(false);
-    expect(params.has('show_lines')).toBe(false);
     expect(params.has('c')).toBe(true);
+    expect([...params.keys()]).toEqual(['c']);
   });
 });
