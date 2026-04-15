@@ -237,14 +237,123 @@ html, body {
 /* ── Mobile / portrait overrides ── */
 @media (max-aspect-ratio: 1/1) {
   #coord-panel {
-    left: auto;
-    right: 1.5rem;
-    top: auto;
-    bottom: 5.5rem;
+    left: 2rem;
+    right: auto;
+    top: 1.5rem;
+    bottom: auto;
     transform: none;
     flex-direction: row;
     gap: 1.5rem;
     align-items: flex-start;
+  }
+}
+
+/* ── Settings ── */
+#settings-btn {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.5rem;
+  background: transparent;
+  border: none;
+  color: var(--outline);
+  font-size: 1.1rem;
+  cursor: pointer;
+  pointer-events: auto;
+  padding: 0.5rem;
+  transition: color 0.2s;
+  z-index: 10;
+}
+#settings-btn:hover { color: var(--primary); }
+
+#settings-panel {
+  position: fixed;
+  top: 3.5rem;
+  right: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--outline-dim);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  z-index: 10;
+  pointer-events: auto;
+}
+#settings-panel[hidden] { display: none; }
+
+#settings-panel label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-head);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--secondary);
+  cursor: pointer;
+}
+#settings-panel label:has(input:disabled) {
+  color: var(--outline-dim);
+  cursor: default;
+}
+#settings-panel input[type="checkbox"] {
+  accent-color: var(--tertiary);
+  width: 0.9rem;
+  height: 0.9rem;
+  cursor: pointer;
+}
+#settings-panel input[type="checkbox"]:disabled { cursor: default; }
+
+/* ── SVG overlay ── */
+#svg-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+#svg-overlay[hidden] { display: none; }
+
+#svg-overlay svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  mix-blend-mode: screen;
+  opacity: 0.35;
+  stroke: white;
+  stroke-width: 1.5px;
+  fill: none;
+}
+#svg-overlay svg * {
+  stroke: inherit;
+  fill: none;
+}
+
+/* ── Association panel ── */
+#association-panel {
+  position: fixed;
+  left: 2.5rem;
+  top: calc(50% + 6rem);
+  font-family: var(--font-head);
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  color: var(--secondary);
+  pointer-events: none;
+  max-width: 14rem;
+  line-height: 1.6;
+}
+#association-panel[hidden] { display: none; }
+
+.trail-miss { color: var(--outline-dim); }
+.trail-hit { color: var(--tertiary); }
+
+@media (max-aspect-ratio: 1/1) {
+  #association-panel {
+    left: auto;
+    right: 1.5rem;
+    top: auto;
+    bottom: 9rem;
   }
 }
 
