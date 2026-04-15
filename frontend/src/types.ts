@@ -75,9 +75,3 @@ export interface ConstellationLines {
   lines: [number, number][]; // flat pairs: [ra,dec],[ra,dec],... each consecutive pair is one segment
 }
 
-export interface NamedStar {
-  name: string;
-  ra: number;   // degrees
-  dec: number;  // degrees
-  mag: number;
-}

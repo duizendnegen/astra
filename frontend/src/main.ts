@@ -1,10 +1,9 @@
-import { loadCatalogue, loadConstellationLines } from './catalogue';
-import { init, resize, setConstellation, animateToResult, animateToLanding, setOverlayData, getProjection, buildProjectionForCamera } from './renderer';
+import { loadCatalogue, loadConstellationLines, loadStarNames } from './catalogue';
+import { init, resize, setConstellation, animateToResult, animateToLanding, setOverlayData, setFeatures, setStarNames, getProjection, buildProjectionForCamera } from './renderer';
 import { buildShareUrl, copyToClipboard, decode } from './share';
 import { exportPng } from './export';
 import { formatDec, formatRA } from './coords';
 import { loadFeatures, saveFeatures } from './features';
-import { NAMED_STARS } from './named-stars';
 import { computeSvgTransform } from './overlay';
 import type { ConstellationState, MatchResult, MatchProvenance, Skeleton } from './types';
 import { RESULT_FOV, RESULT_FOV_MOBILE } from './types';
@@ -34,10 +33,12 @@ const svgOverlay      = document.getElementById('svg-overlay') as HTMLDivElement
 const associationPanel = document.getElementById('association-panel') as HTMLDivElement;
 const featureConstellationImage = document.getElementById('feature-constellation-image') as HTMLInputElement;
 const featureAssociation = document.getElementById('feature-association') as HTMLInputElement;
+const featureStarLabels = document.getElementById('feature-star-labels') as HTMLInputElement;
 
 // ── State ─────────────────────────────────────────────────────────────────
 let currentState: ConstellationState | null = null;
 let features = loadFeatures();
+let cachedStarNames: Map<number, string> | null = null;
 
 // ── SVG overlay ───────────────────────────────────────────────────────────
 
@@ -373,6 +374,16 @@ featureAssociation.addEventListener('change', () => {
   else clearAssociationPanel();
 });
 
+featureStarLabels.addEventListener('change', async () => {
+  features = { ...features, showStarLabels: featureStarLabels.checked };
+  saveFeatures(features);
+  if (features.showStarLabels && !cachedStarNames) {
+    cachedStarNames = await loadStarNames();
+    setStarNames(cachedStarNames);
+  }
+  setFeatures(features);
+});
+
 window.addEventListener('resize', () => {
   resize();
   updateSvgTransform();
@@ -387,14 +398,18 @@ async function boot(): Promise<void> {
   // Sync checkboxes with stored features
   featureConstellationImage.checked = features.showConstellationImage;
   featureAssociation.checked = features.showAssociation;
+  featureStarLabels.checked = features.showStarLabels;
 
-  const [catalogue, constellationLines] = await Promise.all([
+  const [catalogue, constellationLines, starNames] = await Promise.all([
     loadCatalogue(),
     features.showLines ? loadConstellationLines() : Promise.resolve([]),
+    features.showStarLabels ? loadStarNames() : Promise.resolve(new Map<number, string>()),
   ]);
 
+  if (features.showStarLabels) cachedStarNames = starNames;
+
   init(canvas, catalogue);
-  setOverlayData(features, constellationLines, NAMED_STARS);
+  setOverlayData(features, constellationLines, starNames);
   catalogueStatus.textContent = '';
   findBtn.disabled = false;
 

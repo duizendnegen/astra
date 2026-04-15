@@ -23,11 +23,10 @@ describe('loadFeatures', () => {
     expect(f.showAssociation).toBe(false);
     expect(f.showStarLabels).toBe(false);
     expect(f.showLines).toBe(true);
-    expect(f.showStars).toBe(false);
   });
 
   it('returns saved features when key is present', () => {
-    saveFeatures({ showConstellationImage: true, showAssociation: true, showStarLabels: false, showLines: true, showStars: false, renderMode: 'stars' });
+    saveFeatures({ showConstellationImage: true, showAssociation: true, showStarLabels: false, showLines: true, renderMode: 'stars' });
     const f = loadFeatures();
     expect(f.showConstellationImage).toBe(true);
     expect(f.showAssociation).toBe(true);
@@ -42,10 +41,10 @@ describe('loadFeatures', () => {
 
 describe('saveFeatures', () => {
   it('persists features so loadFeatures returns them', () => {
-    saveFeatures({ showConstellationImage: true, showAssociation: false, showStarLabels: false, showLines: false, showStars: true, renderMode: 'stars' });
+    saveFeatures({ showConstellationImage: true, showAssociation: false, showStarLabels: true, showLines: false, renderMode: 'stars' });
     const f = loadFeatures();
     expect(f.showConstellationImage).toBe(true);
-    expect(f.showStars).toBe(true);
+    expect(f.showStarLabels).toBe(true);
     expect(f.showLines).toBe(false);
   });
 });

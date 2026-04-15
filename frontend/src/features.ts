@@ -1,6 +1,5 @@
 export interface Features {
   showLines: boolean;
-  showStars: boolean;
   renderMode: 'stars' | 'skeleton';
   showConstellationImage: boolean;
   showAssociation: boolean;
@@ -9,7 +8,6 @@ export interface Features {
 
 const DEFAULTS: Features = {
   showLines: true,
-  showStars: false,
   renderMode: 'stars',
   showConstellationImage: false,
   showAssociation: false,

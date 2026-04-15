@@ -54,12 +54,9 @@ export function decode(param: string, catalogue: Star[]): ConstellationState | n
 }
 
 export function buildShareUrl(state: ConstellationState): string {
-  const current = new URLSearchParams(location.search);
   const url = new URL(location.href);
   url.search = '';
   url.searchParams.set('c', encode(state));
-  if (current.get('show_stars') === '1') url.searchParams.set('show_stars', '1');
-  if (current.get('show_lines') === '1') url.searchParams.set('show_lines', '1');
   return url.toString();
 }
 

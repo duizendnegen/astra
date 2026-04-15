@@ -41,7 +41,7 @@ opt-in (e.g. gated by a query parameter or feature flag) and SHALL NOT appear by
 The system SHALL render `constellationStars` fully bright and at increased size. Stars in
 `MatchResult.stars` that are not in `constellationStars` SHALL be rendered slightly brighter than
 ordinary background stars but dimmer than constellation stars, forming a visible on-pattern context
-layer.
+layer. When `features.showStarLabels` is `true`, each `constellationStar` with a known name SHALL additionally render a text label beside its dot; the label SHALL fade with `constellationAlpha`.
 
 #### Scenario: Three-tier star brightness
 - **WHEN** the constellation is rendered
@@ -51,6 +51,14 @@ layer.
 - **WHEN** the constellation region is shown
 - **THEN** stars near skeleton edges but not in `constellationStars` are visibly brighter than the general background field
 
+#### Scenario: Labels rendered when star labels on
+- **WHEN** `features.showStarLabels` is `true` and a star in `constellationStars` has a name in the name map
+- **THEN** a text label appears beside that star's dot, fading in with `constellationAlpha`
+
+#### Scenario: Labels absent when star labels off
+- **WHEN** `features.showStarLabels` is `false`
+- **THEN** no labels are rendered on `constellationStars`
+
 ### Requirement: Background stars dimmed by distance from constellation centre
 The system SHALL reduce the opacity of background stars based on their angular distance from the
 constellation patch centre, creating a "portrait with context" framing.
@@ -58,3 +66,9 @@ constellation patch centre, creating a "portrait with context" framing.
 #### Scenario: Stars near centre brighter
 - **WHEN** the constellation is rendered
 - **THEN** stars closer to the patch centre are rendered at higher opacity than stars further away
+
+## REMOVED Requirements
+
+### Requirement: drawNamedStars / 'named' mode
+**Reason:** `drawNamedStars()` and `features.showStars === 'named'` are removed. The `'named'` mode rendered labels on all named stars in the viewport but had no UI entry point and was never reachable by users.
+**Migration:** Delete `drawNamedStars()` from `renderer.ts`. Remove any call sites. `namedStars` state variable and `NAMED_STARS` import are also removed.
