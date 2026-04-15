@@ -21,10 +21,6 @@ The system SHALL expose a `saveFeatures(features: Features): void` function that
 
 ## REMOVED Requirements
 
-### Requirement: Runtime feature flags parsed from URL params
-**Reason:** Feature flags are now managed through the settings panel backed by `localStorage`. URL params are no longer the source of truth for flag state, and `getFeatures(URLSearchParams)` is removed.
-**Migration:** Replace all calls to `getFeatures(params)` with `loadFeatures()`. Remove URL param reads for `show_lines`, `show_stars`, and `render_mode`. Use `saveFeatures(features)` to persist changes from the settings panel.
-
 ### Requirement: showStars URL param modes
 **Reason:** `showStars: false | 'named' | 'constellation'` is removed from `Features`. Star labels are now controlled by `showStarLabels: boolean` via the settings panel. The `'named'` mode had no UI entry point and is dropped along with `drawNamedStars()`.
 **Migration:** Replace all guards on `features.showStars === 'constellation'` with `features.showStarLabels`. Remove `drawNamedStars()` call and function body.

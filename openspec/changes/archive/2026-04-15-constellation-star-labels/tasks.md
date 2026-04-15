@@ -24,9 +24,18 @@
 - [x] 4.3 In `drawConstellation()`, after drawing each star's dot and glow, look up `starNameMap.get(star.id)` and render a text label when `features.showStars === 'constellation'` and a name exists
 - [x] 4.4 Apply `constellationAlpha` to label opacity so labels fade in/out with the constellation
 
-## 5. Verification
+## 5. Verification (Phase 1)
 
 - [x] 5.1 Run the test harness to confirm no regressions
-- [ ] 5.2 Visual check with Playwright: open `?show_stars=constellation`, trigger a constellation match, screenshot to confirm labels appear on matched stars
-- [ ] 5.3 Visual check with Playwright: confirm `?show_stars=1` still shows only the 20 hardcoded named stars (no constellation-star labels)
-- [ ] 5.4 Visual check with Playwright: confirm no labels when `show_stars` is absent
+
+## 6. Settings Panel Wiring & URL Cleanup
+
+- [x] 6.1 Remove `showStars: false | 'named' | 'constellation'` from `Features` in `frontend/src/features.ts`; confirm `showStarLabels: boolean` default remains `false`
+- [x] 6.2 Remove `drawNamedStars()` from `renderer.ts`; update renderer to gate constellation labels on `features.showStarLabels` instead of `features.showStars === 'constellation'`
+- [x] 6.3 Add DOM ref `featureStarLabels` and `change` listener in `main.ts`: updates `features.showStarLabels`, calls `saveFeatures`, triggers lazy `loadStarNames()` + `setOverlayData` on first toggle-on
+- [x] 6.4 Update `boot()` in `main.ts`: replace `features.showStars === 'constellation'` guard with `features.showStarLabels`; sync `featureStarLabels.checked` from loaded features
+- [x] 6.5 Remove `disabled` attribute from `#feature-star-labels` checkbox in `frontend/index.html`
+- [x] 6.6 Remove `show_stars` / `show_lines` forwarding lines from `share.ts:buildShareUrl`; simplify to emit only `?c=`
+- [x] 6.7 Delete the two URL-param test cases from `frontend/src/__tests__/share.test.ts` (`preserves show_stars and show_lines when active`, `omits flag params when not present`)
+- [x] 6.8 Update specs: `feature-flags/spec.md`, `constellation-star-labels/spec.md`, `constellation-rendering/spec.md`, `settings-panel/spec.md`
+- [x] 6.9 Run the test harness; confirm all tests pass

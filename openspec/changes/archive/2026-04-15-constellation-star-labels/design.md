@@ -36,11 +36,23 @@ Greek letter abbreviations in the `bf` column (`Alp`, `Bet`, `Gam`, ...) are map
 
 **Alternative considered**: Hand-curate a JSON of ~50 well-known stars. Rejected — gaps would be noticeable for less-famous constellations.
 
-### D3: `showStars` as `false | 'named' | 'constellation'` union
+### D3 (revised): Use `showStarLabels: boolean` — remove `showStars`
 
-The current `boolean` type in `Features` cleanly extends to a string-union without breaking existing call sites — guards just change from `if (features.showStars)` to `if (features.showStars === 'named')`. The URL param is a natural discriminant: absent/`0` → `false`, `1` → `'named'`, `constellation` → `'constellation'`.
+`showStarLabels: boolean` was already added to `Features` as the settings-panel placeholder. `showStars: false | 'named' | 'constellation'` is now dead: the `'named'` mode had no UI entry point and the `'constellation'` mode is superseded by `showStarLabels`. Keeping both creates a confusing split source of truth.
 
-**Alternative considered**: Separate `showConstellationLabels` boolean flag. Rejected — adds a second flag for what is effectively a mode of the existing one.
+`showStars` is removed from `Features`; `renderer.ts` switches from `features.showStars === 'constellation'` to `features.showStarLabels`. `drawNamedStars()` is deleted.
+
+**Alternative considered**: Map the settings checkbox to `showStars === 'constellation'`. Rejected — `showStarLabels` is already in the localStorage schema and settings-panel spec; renaming would require a data migration.
+
+### D5: Lazy-load `star-names.json` on first toggle-on; eager if already persisted
+
+`star-names.json` is ~3 KB. Loading it eagerly at boot for every user wastes bandwidth when most users never enable star labels. The first toggle-on triggers `loadStarNames()`, the result is cached in a module-scoped variable, and `setOverlayData` is called with the map. If `loadFeatures()` returns `showStarLabels: true` (returning user), boot loads the file eagerly to avoid a blank-label flash on initial render.
+
+**Alternative considered**: Always fetch at boot. Rejected — unnecessary bandwidth cost for the default (off) state.
+
+### D6: Remove `show_stars` / `show_lines` URL param forwarding
+
+`share.ts:buildShareUrl` preserved `show_stars` and `show_lines` into share links, but `main.ts:boot()` never read them (only `?c=` is consumed). They were vestigial after the localStorage migration and are now removed entirely. Existing share links that happen to contain these params will silently ignore them — no UX impact.
 
 ### D4: Labels rendered in `drawConstellation()`, not a new draw pass
 
