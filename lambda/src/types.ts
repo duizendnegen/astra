@@ -19,9 +19,16 @@ export interface MatchResult {
   shapeScore: number;           // edge-ratio score (always computed)
   vertexFitScore: number;       // vertex-fit score (always computed)
   procrustesScore?: number;     // Procrustes residual score (only when scorer === 'procrustes')
+  procrustesAngle?: number;     // Procrustes rotation angle in radians (atan2 of R matrix)
   phase1Candidates?: number;
   phase2Candidates?: number;
   phase3Candidates?: number;
   skeletonPoints?: { ra: number; dec: number }[];
   variantIndex?: number;
+}
+
+export interface TrailEntry {
+  candidate: string;
+  hitId: string | null;
+  sim: number | null;
 }

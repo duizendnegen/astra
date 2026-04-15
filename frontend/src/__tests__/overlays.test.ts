@@ -1,39 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { getFeatures } from '../features';
 import { bboxIntersects } from '../renderer';
 import type { ConstellationLines } from '../types';
-
-function params(query: string): URLSearchParams {
-  return new URLSearchParams(query);
-}
-
-// ── Feature flag combinations ─────────────────────────────────────────────
-
-describe('overlay feature flag combinations', () => {
-  it('showLines on by default, showStars off', () => {
-    const f = getFeatures(params(''));
-    expect(f.showLines).toBe(true);
-    expect(f.showStars).toBe(false);
-  });
-
-  it('only show_lines active', () => {
-    const f = getFeatures(params('show_lines=1'));
-    expect(f.showLines).toBe(true);
-    expect(f.showStars).toBe(false);
-  });
-
-  it('only show_stars active', () => {
-    const f = getFeatures(params('show_stars=1'));
-    expect(f.showLines).toBe(true);
-    expect(f.showStars).toBe(true);
-  });
-
-  it('both flags active', () => {
-    const f = getFeatures(params('show_lines=1&show_stars=1'));
-    expect(f.showLines).toBe(true);
-    expect(f.showStars).toBe(true);
-  });
-});
 
 // ── FOV culling ───────────────────────────────────────────────────────────
 

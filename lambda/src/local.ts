@@ -45,41 +45,33 @@ const server = http.createServer(async (req, res) => {
   for await (const chunk of req) body += chunk;
 
   let word: string;
-  let excludeSeeds: number[] = [];
   try {
-    const parsed = JSON.parse(body) as { word?: unknown; excludeSeeds?: unknown };
+    const parsed = JSON.parse(body) as { word?: unknown };
     if (typeof parsed.word !== 'string' || !parsed.word.trim()) throw new Error();
     word = parsed.word.trim().toLowerCase();
-    if (Array.isArray(parsed.excludeSeeds)) {
-      excludeSeeds = (parsed.excludeSeeds as unknown[]).filter((x): x is number => typeof x === 'number');
-    }
   } catch {
     res.writeHead(400);
     res.end(JSON.stringify({ error: 'word is required' }));
     return;
   }
 
-  const useCache = excludeSeeds.length === 0;
-
-  if (useCache && cache.has(word)) {
+  if (cache.has(word)) {
     log.info({ word }, 'Cache hit');
     const cached = cache.get(word)!;
     const catalogue = getCatalogue();
-    const excludeSet = new Set<number>();
-    const matchResult = match(catalogue, cached.skeletons, excludeSet);
+    const matchResult = match(catalogue, cached.skeletons);
     if (!matchResult) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: 'matching failed' }));
       return;
     }
     const skeleton = cached.skeletons[matchResult.variantIndex ?? 0];
-    const seedStar = catalogue.find(s => s.ra === matchResult.patchRA && s.dec === matchResult.patchDec);
     res.writeHead(200);
-    res.end(JSON.stringify({ constellation: matchResult, skeleton, match: cached.match, seedStarId: seedStar?.id }));
+    res.end(JSON.stringify({ constellation: matchResult, skeleton, match: cached.match }));
     return;
   }
 
-  log.info({ word, excludeSeeds }, 'Retrieving skeleton');
+  log.info({ word }, 'Retrieving skeleton');
   const result = await retrieveSkeleton(word, API_KEY);
 
   if (result.match === null) {
@@ -88,13 +80,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (useCache) cache.set(word, result);
+  cache.set(word, result);
 
   log.info({ word, layer: result.match.layer, source: result.match.source }, 'Pipeline complete');
 
   const catalogue = getCatalogue();
-  const excludeSet = new Set<number>(excludeSeeds);
-  const matchResult = match(catalogue, result.skeletons, excludeSet);
+  const matchResult = match(catalogue, result.skeletons);
 
   if (!matchResult) {
     res.writeHead(500);
@@ -103,13 +94,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   const skeleton = result.skeletons[matchResult.variantIndex ?? 0];
-  const seedStar = catalogue.find(s => s.ra === matchResult.patchRA && s.dec === matchResult.patchDec);
 
   const durationMs = Date.now() - t0;
   log.info({ word, durationMs, layer: result.match?.layer ?? 'fallback' }, 'Request complete');
 
   res.writeHead(200);
-  res.end(JSON.stringify({ constellation: matchResult, skeleton, match: result.match, seedStarId: seedStar?.id }));
+  res.end(JSON.stringify({ constellation: matchResult, skeleton, match: result.match }));
 });
 
 server.listen(PORT, () => {

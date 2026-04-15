@@ -16,13 +16,31 @@ export interface MatchResult {
   edges: [number, number][];
   patchRA: number;              // degrees
   patchDec: number;             // degrees
+  procrustesAngle?: number;     // Procrustes rotation angle in radians
   skeletonPoints?: { ra: number; dec: number }[]; // original skeleton contour in sky coords
   variantIndex?: number;        // which skeleton variant produced this result
+}
+
+export interface TrailEntry {
+  candidate: string;
+  hitId: string | null;
+  sim: number | null;
+}
+
+export interface MatchProvenance {
+  source: 'phosphor' | 'phylopic' | 'custom' | 'generated';
+  id: string;
+  similarity: number;
+  layer: 1 | 3 | 4;
+  svgPath: string;
+  trail?: TrailEntry[];
 }
 
 export interface ConstellationState {
   word: string;
   match: MatchResult;
+  provenance?: MatchProvenance;
+  skeletonCanonical?: [number, number][]; // raw SVG-space skeleton points from backend
 }
 
 // Camera state

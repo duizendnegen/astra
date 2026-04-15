@@ -38,7 +38,7 @@ describe('vertexFitScore formula', () => {
     // physVerts and constellation stars are identical → loss=0 → score=1
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       scorer: 'vertex-fit',
       generator: 'anchor-pair',
@@ -53,7 +53,7 @@ describe('vertexFitScore formula', () => {
   it('vertexFitScore is always included even when scorer is edge-ratio', () => {
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       scorer: 'edge-ratio',
       generator: 'anchor-pair',
@@ -71,7 +71,7 @@ describe('procrustesScore formula', () => {
   it('is included when scorer is procrustes', () => {
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       scorer: 'procrustes',
       generator: 'anchor-pair',
@@ -86,7 +86,7 @@ describe('procrustesScore formula', () => {
   it('is undefined when scorer is not procrustes', () => {
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       scorer: 'edge-ratio',
       generator: 'anchor-pair',
@@ -103,7 +103,7 @@ describe('generator dispatch', () => {
   it('anchor-pair returns a result', () => {
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       generator: 'anchor-pair',
       seedMaxMag: 3,
@@ -114,7 +114,7 @@ describe('generator dispatch', () => {
   it('single-sweep returns a result', () => {
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       generator: 'single-sweep',
       seedMaxMag: 3,
@@ -125,7 +125,7 @@ describe('generator dispatch', () => {
   it('any-vertex returns a result', () => {
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       generator: 'any-vertex',
       seedMaxMag: 3,
@@ -142,19 +142,19 @@ describe('scorer dispatch', () => {
   const cfg = { model: 'skeleton-shape' as const, generator: 'anchor-pair' as const, seedMaxMag: 3 };
 
   it('edge-ratio scorer returns shapeScore as primary', () => {
-    const result = match(catalogue, [skeleton], new Set(), { ...cfg, scorer: 'edge-ratio' });
+    const result = match(catalogue, [skeleton], { ...cfg, scorer: 'edge-ratio' });
     expect(result).not.toBeNull();
     expect(result!.shapeScore).toBeGreaterThan(0);
   });
 
   it('vertex-fit scorer returns vertexFitScore as primary', () => {
-    const result = match(catalogue, [skeleton], new Set(), { ...cfg, scorer: 'vertex-fit' });
+    const result = match(catalogue, [skeleton], { ...cfg, scorer: 'vertex-fit' });
     expect(result).not.toBeNull();
     expect(result!.vertexFitScore).toBeGreaterThan(0);
   });
 
   it('procrustes scorer returns procrustesScore', () => {
-    const result = match(catalogue, [skeleton], new Set(), { ...cfg, scorer: 'procrustes' });
+    const result = match(catalogue, [skeleton], { ...cfg, scorer: 'procrustes' });
     expect(result).not.toBeNull();
     expect(result!.procrustesScore).toBeDefined();
     expect(result!.procrustesScore!).toBeGreaterThan(0);
@@ -169,7 +169,7 @@ describe('runPhase2And3 collects all phase3 candidates', () => {
     // more than one candidate. phase3Candidates on the result reflects the count.
     const catalogue = triangleStars();
     const skeleton = triangleSkeleton();
-    const result = match(catalogue, [skeleton], new Set(), {
+    const result = match(catalogue, [skeleton], {
       model: 'skeleton-shape',
       generator: 'anchor-pair',
       seedMaxMag: 5,

@@ -12,6 +12,17 @@
 <body>
   <canvas id="sky"></canvas>
 
+  <!-- Settings (landing only) -->
+  <button id="settings-btn">⚙</button>
+  <div id="settings-panel" hidden>
+    <label><input type="checkbox" id="feature-constellation-image"> Constellation image</label>
+    <label><input type="checkbox" id="feature-association"> Match trail</label>
+    <label><input type="checkbox" id="feature-star-labels" disabled> Star labels</label>
+  </div>
+
+  <!-- SVG overlay (over canvas, shown when constellation image feature is on) -->
+  <div id="svg-overlay" hidden></div>
+
   <!-- Landing UI -->
   <div id="landing">
     <div class="wordmark">ASTRA</div>
@@ -35,6 +46,8 @@
         <span id="coord-ra" class="coord-value"></span>
       </div>
     </div>
+
+    <div id="association-panel" hidden></div>
 
     <div id="overlay">
       <div id="word-display"></div>

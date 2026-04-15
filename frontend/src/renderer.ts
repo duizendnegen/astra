@@ -16,7 +16,7 @@ let camera: CameraState = { ...LANDING_CAMERA };
 let stars: Star[] = [];
 let constellation: MatchResult | null = null;
 let constellationAlpha: number = 1;
-let features: Features = { showLines: false, showStars: false, renderMode: 'stars' };
+let features: Features = { showLines: false, showStars: false, renderMode: 'stars', showConstellationImage: false, showAssociation: false, showStarLabels: false };
 let constellationLines: ConstellationLines[] = [];
 let namedStars: NamedStar[] = [];
 
@@ -348,3 +348,16 @@ export function animateToLanding(): void {
 
 export function getCanvas(): HTMLCanvasElement { return canvas; }
 export function getContext(): CanvasRenderingContext2D { return ctx; }
+export function getProjection(): d3.GeoProjection { return projection; }
+
+/** Build a D3 stereographic projection for a specific camera state (without updating the live camera). */
+export function buildProjectionForCamera(ra: number, dec: number, fov: number): d3.GeoProjection {
+  const shortDim = Math.min(canvas.width, canvas.height);
+  const scale = (shortDim / 2) / (2 * Math.tan((fov * Math.PI) / 360));
+  return d3
+    .geoStereographic()
+    .rotate([-ra, -dec, 0])
+    .scale(scale)
+    .translate([canvas.width / 2, canvas.height / 2])
+    .clipAngle(90);
+}

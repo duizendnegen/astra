@@ -14,6 +14,7 @@ import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import * as potrace from 'potrace';
 import type { Skeleton } from './core.js';
+import type { TrailEntry } from './types.js';
 import { svgToSkeleton, rdpSimplify, visvalingamWhyatt, type SimplifyFn } from './svg-to-skeleton.js';
 import { createLogger } from './logger.js';
 import path from 'path';
@@ -55,6 +56,7 @@ export interface MatchProvenance {
   similarity: number;
   layer: 1 | 3 | 4;
   svgPath: string;
+  trail?: TrailEntry[];
 }
 
 export interface PipelineResult {
@@ -434,12 +436,17 @@ export async function retrieveSkeleton(
     if (candidates.length > 0) {
       const vecs = await embedBatch(candidates, apiKey);
       log.debug({ durationMs: Date.now() - t0 }, 'L3 batch embed done');
+      const trail: TrailEntry[] = [];
       for (let i = 0; i < candidates.length; i++) {
         const vec = vecs[i];
-        if (!vec) continue;
+        if (!vec) {
+          trail.push({ candidate: candidates[i], hitId: null, sim: null });
+          continue;
+        }
         const results = await searchPinecone(vec);
         const best = bestAboveThresholdL3(results);
         if (best) {
+          trail.push({ candidate: candidates[i], hitId: best.id, sim: best.similarity });
           log.info({ via: candidates[i], id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
           const svgContent = await fetchSvgFromS3(best.id);
           if (svgContent) {
@@ -448,7 +455,7 @@ export async function retrieveSkeleton(
               clearTimeout(timer);
               l4Controller.abort();
               return {
-                match: { source: best.source as 'phosphor' | 'phylopic' | 'custom', id: best.id, similarity: best.similarity, layer: 3, svgPath: svgContent },
+                match: { source: best.source as 'phosphor' | 'phylopic' | 'custom', id: best.id, similarity: best.similarity, layer: 3, svgPath: svgContent, trail },
                 skeletons: [skeleton],
               };
             }
@@ -456,6 +463,8 @@ export async function retrieveSkeleton(
           } else {
             log.warn({ via: candidates[i], id: best.id, durationMs: Date.now() - t0 }, 'L3 S3 fetch failed');
           }
+        } else {
+          trail.push({ candidate: candidates[i], hitId: null, sim: null });
         }
       }
     }

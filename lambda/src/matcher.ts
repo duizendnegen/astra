@@ -648,6 +648,32 @@ function computeProcrustesUnitScaleScore(
   return 1 / (1 + (totalResidual / n) / ORION_SPAN_DEG);
 }
 
+function computeProcrustesAngle(
+  constellationStars: Star[],
+  physVerts: [number, number][],
+): number {
+  const n = constellationStars.length;
+  if (n < 2) return 0;
+
+  let pRa = 0, pDec = 0, qRa = 0, qDec = 0;
+  for (let i = 0; i < n; i++) {
+    pRa += constellationStars[i].ra; pDec += constellationStars[i].dec;
+    qRa += physVerts[i][0]; qDec += physVerts[i][1];
+  }
+  pRa /= n; pDec /= n; qRa /= n; qDec /= n;
+
+  const A: [number, number][] = constellationStars.map(s => [s.ra - pRa, s.dec - pDec]);
+  const B: [number, number][] = physVerts.slice(0, n).map(v => [v[0] - qRa, v[1] - qDec]);
+
+  let h00 = 0, h01 = 0, h10 = 0, h11 = 0;
+  for (let i = 0; i < n; i++) {
+    h00 += B[i][0] * A[i][0]; h01 += B[i][0] * A[i][1];
+    h10 += B[i][1] * A[i][0]; h11 += B[i][1] * A[i][1];
+  }
+
+  return Math.atan2(h01 - h10, h00 + h11);
+}
+
 function computeSpanFactor(physSpan: number): number {
   // Flat zone [20°, 30°]; penalise placements outside with exp(-excess / ORION_SPAN_DEG)
   const excess = Math.max(0, physSpan - 30, 20 - physSpan);
@@ -868,7 +894,6 @@ class SpatialGrid {
 function pairwiseAnchorSearch(
   skeleton: Skeleton,
   catalogue: Star[],
-  excludeSeeds: Set<number>,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
 ): (ScoreResult & { seed: Star })[] {
@@ -898,7 +923,7 @@ function pairwiseAnchorSearch(
   const phase1Top: PhaseCandidate[] = [];
   let prescreenMin = -1;
 
-  const anchors = catalogue.filter(s => s.mag <= cfg.seedMaxMag && !excludeSeeds.has(s.id));
+  const anchors = catalogue.filter(s => s.mag <= cfg.seedMaxMag);
   const t0 = performance.now();
   log.debug({ nVtx, anchors: anchors.length, axisU, axisV, maxAxisDist: maxAxisDist.toFixed(3) }, 'pairwise start');
 
@@ -976,7 +1001,6 @@ function pairwiseAnchorSearch(
 function singleSweepSearch(
   skeleton: Skeleton,
   catalogue: Star[],
-  excludeSeeds: Set<number>,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
 ): (ScoreResult & { seed: Star })[] {
@@ -1004,7 +1028,6 @@ function singleSweepSearch(
   let prescreenMin = -1;
 
   for (const seed of catalogue) {
-    if (excludeSeeds.has(seed.id)) continue;
     if (seed.mag > cfg.seedMaxMag) continue;
 
     for (let ri = 0; ri < rotSteps; ri++) {
@@ -1047,7 +1070,6 @@ function singleSweepSearch(
 function anyVertexSearch(
   skeleton: Skeleton,
   catalogue: Star[],
-  excludeSeeds: Set<number>,
   cfg: ResolvedConfig,
   grid: SpatialGrid,
 ): (ScoreResult & { seed: Star })[] {
@@ -1077,7 +1099,7 @@ function anyVertexSearch(
   const phase1Top: PhaseCandidate[] = [];
   let prescreenMin = -1;
 
-  const seeds = catalogue.filter(s => !excludeSeeds.has(s.id) && s.mag <= cfg.seedMaxMag);
+  const seeds = catalogue.filter(s => s.mag <= cfg.seedMaxMag);
 
   for (const starS of seeds) {
     for (let vi = 0; vi < nVtx; vi++) {
@@ -1171,7 +1193,6 @@ export function selectDiverse<T extends { score: number; patchRA: number; patchD
 export function match(
   catalogue: Star[],
   skeletons: Skeleton[],
-  excludeSeeds: Set<number> = new Set(),
   config?: MatcherConfig,
 ): MatchResult | null {
   const cfg = resolveConfig(config);
@@ -1189,7 +1210,7 @@ export function match(
 
   for (let i = 0; i < skeletons.length; i++) {
     try {
-      const candidates = searchFn(skeletons[i], catalogue, excludeSeeds, cfg, grid);
+      const candidates = searchFn(skeletons[i], catalogue, cfg, grid);
       if (candidates.length === 0) { log.debug({ index: i }, 'skeleton returned no candidates'); continue; }
       for (const c of candidates) {
         const physRaDec = c.skeletonRaDec;
@@ -1241,8 +1262,6 @@ export function match(
     return null;
   }
 
-  excludeSeeds.add(selected.seed.id);
-
   log.info({ variantIndex: selected.variantIndex, shapeScore: (selected.shapeScore * 100).toFixed(1), vertexFitScore: (selected.vertexFitScore * 100).toFixed(1) }, 'variant won');
   log.debug({ spanDeg: actualSpan.toFixed(1), orionPct: Math.round((actualSpan / ORION_SPAN_DEG) * 100) }, 'pattern size');
 
@@ -1255,6 +1274,7 @@ export function match(
     shapeScore: selected.shapeScore,
     vertexFitScore: selected.vertexFitScore,
     procrustesScore: selected.procrustesScore,
+    procrustesAngle: computeProcrustesAngle(selected.constellationStars, selected.skeletonRaDec.map(p => [p.ra, p.dec])),
     phase1Candidates: selected.phase1Candidates,
     phase2Candidates: selected.phase2Candidates,
     phase3Candidates: selected.phase3Candidates,

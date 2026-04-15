@@ -35,39 +35,30 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   };
 
   let word: string;
-  let excludeSeeds: number[] = [];
   try {
-    const body = JSON.parse(event.body ?? '{}') as { word?: unknown; excludeSeeds?: unknown };
+    const body = JSON.parse(event.body ?? '{}') as { word?: unknown };
     if (typeof body.word !== 'string' || !body.word.trim()) {
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'word is required' }) };
     }
     word = body.word.trim().toLowerCase();
-    if (Array.isArray(body.excludeSeeds)) {
-      excludeSeeds = (body.excludeSeeds as unknown[]).filter((x): x is number => typeof x === 'number');
-    }
   } catch {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid JSON body' }) };
   }
 
   const catalogue = getCatalogue();
-  const excludeSet = new Set<number>(excludeSeeds);
-  const useCache = excludeSeeds.length === 0;
 
-  // Cache read (only when no excludeSeeds)
-  if (useCache) {
-    const cached = await dynamo.send(new GetCommand({ TableName: TABLE_NAME, Key: { word } }));
-    const item = cached.Item as CacheItem | undefined;
-    if (item?.skeletons?.length) {
-      const matchResult = match(catalogue, item.skeletons, excludeSet);
-      if (matchResult) {
-        const skeleton = item.skeletons[matchResult.variantIndex ?? 0];
-        const seedStar = catalogue.find(s => s.ra === matchResult.patchRA && s.dec === matchResult.patchDec);
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({ constellation: matchResult, skeleton, match: item.match, seedStarId: seedStar?.id }),
-        };
-      }
+  // Cache read
+  const cached = await dynamo.send(new GetCommand({ TableName: TABLE_NAME, Key: { word } }));
+  const item = cached.Item as CacheItem | undefined;
+  if (item?.skeletons?.length) {
+    const matchResult = match(catalogue, item.skeletons);
+    if (matchResult) {
+      const skeleton = item.skeletons[matchResult.variantIndex ?? 0];
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ constellation: matchResult, skeleton, match: item.match }),
+      };
     }
   }
 
@@ -78,26 +69,23 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return { statusCode: 422, headers, body: JSON.stringify({ error: 'No constellation found.' }) };
   }
 
-  if (useCache) {
-    await dynamo.send(
-      new PutCommand({
-        TableName: TABLE_NAME,
-        Item: { word, match: result.match, skeletons: result.skeletons },
-      }),
-    );
-  }
+  await dynamo.send(
+    new PutCommand({
+      TableName: TABLE_NAME,
+      Item: { word, match: result.match, skeletons: result.skeletons },
+    }),
+  );
 
-  const matchResult = match(catalogue, result.skeletons, excludeSet);
+  const matchResult = match(catalogue, result.skeletons);
   if (!matchResult) {
     return { statusCode: 500, headers, body: JSON.stringify({ error: 'matching failed' }) };
   }
 
   const skeleton = result.skeletons[matchResult.variantIndex ?? 0];
-  const seedStar = catalogue.find(s => s.ra === matchResult.patchRA && s.dec === matchResult.patchDec);
 
   return {
     statusCode: 200,
     headers,
-    body: JSON.stringify({ constellation: matchResult, skeleton, match: result.match, seedStarId: seedStar?.id }),
+    body: JSON.stringify({ constellation: matchResult, skeleton, match: result.match }),
   };
 }
