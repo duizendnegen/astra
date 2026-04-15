@@ -68,7 +68,7 @@ html, body {
   letter-spacing: 0.3em;
   text-transform: uppercase;
   color: var(--outline);
-  opacity: 0.6;
+  opacity: 0.8;
 }
 
 #word-input {
@@ -85,7 +85,7 @@ html, body {
   transition: border-color 0.4s;
 }
 
-#word-input::placeholder { color: var(--outline-dim); }
+#word-input::placeholder { color: var(--outline); }
 #word-input:focus { border-bottom-color: var(--tertiary); }
 
 #find-btn {
@@ -233,6 +233,20 @@ html, body {
   transition: color 0.2s;
 }
 #close-btn:hover { color: var(--primary); }
+
+/* ── Mobile / portrait overrides ── */
+@media (max-aspect-ratio: 1/1) {
+  #coord-panel {
+    left: auto;
+    right: 1.5rem;
+    top: auto;
+    bottom: 5.5rem;
+    transform: none;
+    flex-direction: row;
+    gap: 1.5rem;
+    align-items: flex-start;
+  }
+}
 
 /* ── Transitions ── */
 .fade-in { animation: fadeIn 0.8s ease forwards; }

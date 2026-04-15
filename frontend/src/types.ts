@@ -39,6 +39,7 @@ export const LANDING_CAMERA: CameraState = {
 };
 
 export const RESULT_FOV = 25;
+export const RESULT_FOV_MOBILE = 15; // tighter zoom on portrait/mobile
 
 // ── Overlay types ─────────────────────────────────────────────────────────
 

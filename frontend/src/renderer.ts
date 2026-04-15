@@ -1,6 +1,6 @@
 import * as d3 from 'd3';
 import type { Star, CameraState, MatchResult, ConstellationLines, NamedStar } from './types';
-import { LANDING_CAMERA, RESULT_FOV } from './types';
+import { LANDING_CAMERA, RESULT_FOV, RESULT_FOV_MOBILE } from './types';
 import type { Features } from './features';
 
 const STAR_LINE_COLOR = '#a7c8ff';
@@ -336,8 +336,10 @@ export function resetCamera(): void {
 }
 
 export function animateToResult(patchRA: number, patchDec: number, onComplete?: () => void): void {
+  const isMobile = canvas.height > canvas.width;
+  const fov = isMobile ? RESULT_FOV_MOBILE : RESULT_FOV;
   constellationAlpha = 0;
-  animateTo({ ra: patchRA, dec: patchDec, fov: RESULT_FOV }, 2000, onComplete, RESULT_FADE_START);
+  animateTo({ ra: patchRA, dec: patchDec, fov }, 2000, onComplete, RESULT_FADE_START);
 }
 
 export function animateToLanding(): void {
