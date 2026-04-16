@@ -100,7 +100,7 @@ export function computeSvgTransform(
   // 5. Pivot point: skeleton centroid mapped back to SVG viewBox coordinates.
   //    canonicalPoints are in [0,1] space (normalised via viewBox by svg-to-skeleton.ts:
   //    normalised = (raw - vb.origin) / max(vb.w, vb.h)).
-  //    Inverse: raw = norm * max(vb.w, vb.h) + vb.origin  → CSS px for 1:1-rendered SVGs.
+  //    Inverse: raw = norm * max(vb.w, vb.h) + vb.origin  → SVG user units (converted to CSS px in step 7).
   //    Falls back to bbox centre when canonicalPoints or viewBox are absent.
   let contentCenterX: number, contentCenterY: number;
   const vb = svgEl.viewBox?.baseVal;
@@ -138,13 +138,23 @@ export function computeSvgTransform(
     totalAngle = R + procrustesAngle;
   }
 
-  // 7. Build transform: rotate + scale around pivot, then translate to (cx, cy)
-  const s = canvasExtent / svgExtent;
-  const tx = cx - contentCenterX;
-  const ty = cy - contentCenterY;
+  // 7. Build transform: rotate + scale around pivot, then translate to (cx, cy).
+  //    contentCenterX/Y are in SVG user units (viewBox space, e.g. 0–256).
+  //    CSS transforms apply in the element's CSS layout coordinate system (e.g. 0–1200px),
+  //    so we must scale by (CSS layout width / viewBox width) before using in px values.
+  const svgCssWidth = parseFloat(getComputedStyle(svgEl).width);
+  const svgCssHeight = parseFloat(getComputedStyle(svgEl).height);
+  const vbScaleX = vb && vb.width > 0 && svgCssWidth > 0 ? svgCssWidth / vb.width : 1;
+  const vbScaleY = vb && vb.height > 0 && svgCssHeight > 0 ? svgCssHeight / vb.height : 1;
+  const contentCenterX_css = contentCenterX * vbScaleX;
+  const contentCenterY_css = contentCenterY * vbScaleY;
+  const svgExtent_css = svgExtent * vbScaleX;
+  const s = canvasExtent / svgExtent_css;
+  const tx = cx - contentCenterX_css;
+  const ty = cy - contentCenterY_css;
 
   return {
-    transformOrigin: `${contentCenterX}px ${contentCenterY}px`,
+    transformOrigin: `${contentCenterX_css}px ${contentCenterY_css}px`,
     transform: `translate(${tx}px, ${ty}px) rotate(${-totalAngle}rad) scale(${s})`,
   };
 }
