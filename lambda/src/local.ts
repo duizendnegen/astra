@@ -35,7 +35,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method !== 'POST' || req.url !== '/api/constellation') {
+  const route = req.url?.split('?')[0];
+  if (req.method !== 'POST' || (route !== '/api/constellation' && route !== '/api/skeleton')) {
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'not found' }));
     return;
@@ -52,6 +53,15 @@ const server = http.createServer(async (req, res) => {
   } catch {
     res.writeHead(400);
     res.end(JSON.stringify({ error: 'word is required' }));
+    return;
+  }
+
+  // /api/skeleton — return raw pipeline result (skeletons + provenance) without matching.
+  // Used by the test harness to generate and cache fixture files.
+  if (route === '/api/skeleton') {
+    const result = await retrieveSkeleton(word, API_KEY);
+    res.writeHead(200);
+    res.end(JSON.stringify({ skeletons: result.skeletons, match: result.match ?? null }));
     return;
   }
 
