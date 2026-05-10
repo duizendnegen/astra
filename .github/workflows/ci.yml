@@ -73,3 +73,70 @@ jobs:
       - name: CDK diff
         run: npx cdk diff
         working-directory: infra
+
+  constellation-previews:
+    runs-on: ubuntu-latest
+    # Runs in parallel with `test`; needs its own elevated permissions
+    permissions:
+      id-token: write       # OIDC for AWS
+      contents: write       # push preview images to ci-previews branch
+      pull-requests: write  # post PR comment
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install canvas system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            lambda/package-lock.json
+            test-harness/package-lock.json
+
+      - name: Install lambda deps
+        run: npm ci
+        working-directory: lambda
+
+      - name: Install test-harness deps
+        run: npm ci
+        working-directory: test-harness
+
+      - name: Configure AWS credentials (read-only OIDC role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_READONLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Start skeleton service
+        working-directory: lambda
+        env:
+          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+          PINECONE_INDEX_NAME: ${{ vars.PINECONE_INDEX_NAME }}
+          ICONS_BUCKET_NAME: ${{ vars.ICONS_BUCKET_NAME }}
+        run: npm run dev:local &
+
+      - name: Wait for skeleton service to be ready
+        run: |
+          echo "Waiting for skeleton service on port 3001..."
+          timeout 90 bash -c 'until nc -z localhost 3001 2>/dev/null; do sleep 2; done'
+          echo "Service ready"
+
+      - name: Generate constellation previews
+        # Use a fresh fixture directory so all words go through the live service,
+        # not cached skeletons — the retrieval pipeline is what we want tested.
+        working-directory: test-harness
+        run: npx tsx run.ts --words banana,anchor,love,bunny,tree --run-id ci-preview --fixtures-dir _ci_
+
+      - name: Post PR comment with previews
+        if: github.event_name == 'pull_request'
+        working-directory: test-harness
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPORTS_DIR: reports/ci-preview
+        run: npx tsx post-preview-comment.ts

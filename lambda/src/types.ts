@@ -25,6 +25,11 @@ export interface MatchResult {
   phase3Candidates?: number;
   skeletonPoints?: { ra: number; dec: number }[];
   variantIndex?: number;
+  // Score-gap and diversity metadata for regression analysis
+  selectedScore?: number;   // composite score of the chosen match
+  topScore?: number;        // best composite score in the full Phase-3 pool
+  acceptableCount?: number; // candidates within 10% of topScore (the "good-enough" band)
+  distantCount?: number;    // acceptable candidates ≥30° from the top result (different sky regions)
 }
 
 export interface TrailEntry {

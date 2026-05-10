@@ -29,6 +29,9 @@ const categoryA: WordEntry[] = [
   { word: 'telescope', category: 'A' },
   { word: 'sloth', category: 'A' },
   { word: 'oak', category: 'A' },
+  { word: 'banana', category: 'A' },
+  { word: 'bunny', category: 'A' },
+  { word: 'tree', category: 'A' },
 ];
 
 // B — should hit L1 via embedding proximity (close synonyms, near-matches)
@@ -62,6 +65,7 @@ const categoryD: WordEntry[] = [
 const categoryE: WordEntry[] = [
   { word: 'mercury', category: 'E' },  // planet, liquid metal, or Roman god symbol
   { word: 'star', category: 'E' },     // geometric star (Phosphor) vs astronomical (Phylopic)
+  { word: 'love', category: 'E' },     // heart, hands, text — multiple valid shapes
 ];
 
 export const wordEntries: WordEntry[] = [

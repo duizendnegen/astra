@@ -28,6 +28,8 @@ scripts/custom-pipeline/bin/
 
 # Test harness reports (fixtures are committed; generated reports are not)
 test-harness/reports/
+# CI-generated ephemeral fixture dirs (prefixed with _)
+test-harness/_*/
 
 # OS
 .DS_Store
