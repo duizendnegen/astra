@@ -149,6 +149,10 @@ export function normalise(word: string): string {
 // ── Embedding ─────────────────────────────────────────────────────────────────
 
 async function embed(text: string, apiKey: string): Promise<number[] | null> {
+  if (!apiKey) {
+    log.warn({ text }, 'embed: no API key set — L1 embedding skipped');
+    return null;
+  }
   const results = await embedBatch([text], apiKey);
   return results[0] ?? null;
 }
@@ -190,7 +194,10 @@ interface SearchResult {
 
 async function searchPinecone(queryVec: number[], topK = 5): Promise<SearchResult[]> {
   const index = await getPineconeIndex();
-  if (!index) return [];
+  if (!index) {
+    log.warn('searchPinecone: Pinecone index not initialised — L1 skipped');
+    return [];
+  }
 
   const t0 = Date.now();
   try {

@@ -13,8 +13,16 @@ const log = createLogger('local');
 const PORT = 3001;
 const API_KEY = process.env.OPENROUTER_API_KEY ?? '';
 
+// Log which required env vars are present so CI failures are immediately visible.
+log.info({
+  OPENROUTER_API_KEY: !!API_KEY,
+  PINECONE_API_KEY: !!process.env.PINECONE_API_KEY,
+  PINECONE_INDEX_NAME: process.env.PINECONE_INDEX_NAME ?? '(unset)',
+  ICONS_BUCKET_NAME: process.env.ICONS_BUCKET_NAME ?? '(unset)',
+}, 'startup env check');
+
 if (!API_KEY) {
-  log.warn('OPENROUTER_API_KEY not set — LLM calls will fail. Set it in .env.local.');
+  log.warn('OPENROUTER_API_KEY not set — embedding and LLM calls will fail');
 }
 
 // In-memory cache (keyed by word — retrieval pipeline is deterministic for same index)
@@ -60,6 +68,12 @@ const server = http.createServer(async (req, res) => {
   // Used by the test harness to generate and cache fixture files.
   if (route === '/api/skeleton') {
     const result = await retrieveSkeleton(word, API_KEY);
+    if (result.skeletons.length === 0) {
+      log.warn({ word, matchNull: result.match === null }, 'retrieveSkeleton returned no skeletons');
+      res.writeHead(422);
+      res.end(JSON.stringify({ error: 'no skeletons found', word, matchNull: result.match === null }));
+      return;
+    }
     res.writeHead(200);
     res.end(JSON.stringify({ skeletons: result.skeletons, match: result.match ?? null }));
     return;
