@@ -127,27 +127,11 @@ jobs:
           timeout 90 bash -c 'until nc -z localhost 3001 2>/dev/null; do sleep 2; done'
           echo "Service ready"
 
-      - name: Smoke-test skeleton service
-        run: |
-          echo "--- /api/skeleton response for 'anchor' ---"
-          curl -sf -X POST http://localhost:3001/api/skeleton \
-            -H 'Content-Type: application/json' \
-            -d '{"word":"anchor"}' | head -c 500 || echo "(curl failed or returned error)"
-
       - name: Generate constellation previews
         # Use a fresh fixture directory so all words go through the live service,
         # not cached skeletons — the retrieval pipeline is what we want tested.
         working-directory: test-harness
         run: npx tsx run.ts --words banana,anchor,love,bunny,tree --run-id ci-preview --fixtures-dir _ci_
-
-      - name: Upload fetched fixtures (debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-fixtures-${{ github.sha }}
-          path: test-harness/_ci_/
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: Post PR comment with previews
         if: github.event_name == 'pull_request'
