@@ -106,12 +106,13 @@ export class InfraStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/src/skeleton.ts'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(30),
+      tracing: lambda.Tracing.ACTIVE,
       projectRoot: path.join(__dirname, '../..'),
       depsLockFilePath: path.join(__dirname, '../../lambda/package-lock.json'),
       bundling: {
         forceDockerBundling: true,
         externalModules: ['@aws-sdk/*', '@smithy/*'],
-        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
+        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping', 'aws-xray-sdk'],
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
