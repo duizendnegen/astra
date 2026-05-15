@@ -114,6 +114,7 @@ export class InfraStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/src/skeleton.ts'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(60),
+      memorySize: 1024,
       tracing: lambda.Tracing.ACTIVE,
       layers: [adotLayer],
       projectRoot: path.join(__dirname, '../..'),
