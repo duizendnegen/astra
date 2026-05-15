@@ -16,13 +16,6 @@ const { mockDynamoSend } = vi.hoisted(() => ({ mockDynamoSend: vi.fn() }));
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
-vi.mock('aws-xray-sdk', () => ({
-  default: {
-    captureAWSv3Client: (client: unknown) => client,
-    resolveSegment: () => undefined,
-  },
-}));
-
 vi.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: vi.fn().mockImplementation(() => ({})),
 }));
