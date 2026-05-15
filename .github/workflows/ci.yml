@@ -64,6 +64,8 @@ jobs:
         run: npm ci
         working-directory: infra
 
+      - uses: docker/setup-qemu-action@v3
+
       - name: Configure AWS credentials (read-only OIDC role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
