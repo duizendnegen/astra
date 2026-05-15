@@ -121,7 +121,7 @@ export class InfraStack extends cdk.Stack {
       bundling: {
         forceDockerBundling: true,
         externalModules: ['@aws-sdk/*', '@smithy/*'],
-        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
+        nodeModules: ['@opentelemetry/api', '@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
