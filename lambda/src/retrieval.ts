@@ -12,6 +12,8 @@
 import { Pinecone } from '@pinecone-database/pinecone';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import AWSXRay from 'aws-xray-sdk';
+const { captureAWSv3Client, resolveSegment } = AWSXRay;
 import * as potrace from 'potrace';
 import type { Skeleton } from './core.js';
 import type { TrailEntry } from './types.js';
@@ -75,11 +77,12 @@ interface PineconeMatch {
 // API key resolution is lazy-async: the promise is kicked off immediately so
 // that on warm invocations the key is already resolved.
 
-const s3 = new S3Client(
+// Patch S3 client for X-Ray automatic sub-segment capture
+const s3 = captureAWSv3Client(new S3Client(
   process.env.AWS_ENDPOINT_URL
     ? { endpoint: process.env.AWS_ENDPOINT_URL, forcePathStyle: true, region: process.env.AWS_REGION ?? 'us-east-1' }
     : {},
-);
+));
 
 let _pineconeIndex: ReturnType<InstanceType<typeof Pinecone>['index']> | null = null;
 
@@ -111,6 +114,18 @@ const _pineconeReady: Promise<void> = (async () => {
 async function getPineconeIndex() {
   await _pineconeReady;
   return _pineconeIndex;
+}
+
+// ── X-Ray sub-segment helper ──────────────────────────────────────────────────
+
+function tryAddSubsegment(name: string) {
+  try {
+    const seg = resolveSegment();
+    return seg?.addNewSubsegment(name) ?? null;
+  } catch {
+    log.debug({ name }, 'no active X-Ray segment');
+    return null;
+  }
 }
 
 // ── S3 SVG fetch ──────────────────────────────────────────────────────────────
@@ -157,11 +172,17 @@ async function embedBatch(texts: string[], apiKey: string): Promise<(number[] | 
   if (texts.length === 0) return [];
   try {
     const t0 = Date.now();
-    const res = await fetch(`${OPENROUTER_BASE}/embeddings`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
-    });
+    const seg = tryAddSubsegment('embed');
+    let res!: Response;
+    try {
+      res = await fetch(`${OPENROUTER_BASE}/embeddings`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
+      });
+    } finally {
+      seg?.close();
+    }
     if (!res.ok) {
       log.warn({ status: res.status }, 'embed HTTP error');
       return texts.map(() => null);
@@ -249,15 +270,21 @@ const L3_PROMPT = (word: string) =>
 
 async function l3Candidates(word: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
   try {
-    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: process.env.SKELETON_MODEL ?? 'anthropic/claude-haiku-4.5',
-        messages: [{ role: 'user', content: L3_PROMPT(word) }],
-      }),
-      signal,
-    });
+    const seg = tryAddSubsegment('l3-candidates');
+    let res!: Response;
+    try {
+      res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: process.env.SKELETON_MODEL ?? 'anthropic/claude-haiku-4.5',
+          messages: [{ role: 'user', content: L3_PROMPT(word) }],
+        }),
+        signal,
+      });
+    } finally {
+      seg?.close();
+    }
     if (!res.ok) return [];
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = data.choices?.[0]?.message?.content ?? '';
@@ -279,15 +306,21 @@ const L4_IMAGE_PROMPT = (word: string) =>
 
 export async function l4GenerateFromImage(word: string, apiKey: string, signal?: AbortSignal): Promise<Buffer | null> {
   try {
-    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: L4_IMAGE_MODEL,
-        messages: [{ role: 'user', content: L4_IMAGE_PROMPT(word) }],
-      }),
-      signal,
-    });
+    const seg = tryAddSubsegment('l4-image-gen');
+    let res!: Response;
+    try {
+      res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: L4_IMAGE_MODEL,
+          messages: [{ role: 'user', content: L4_IMAGE_PROMPT(word) }],
+        }),
+        signal,
+      });
+    } finally {
+      seg?.close();
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       log.warn({ status: res.status, model: L4_IMAGE_MODEL, body: body.slice(0, 200) }, 'L4 image gen HTTP error');
@@ -372,7 +405,13 @@ export async function retrieveSkeleton(
       log.info({ id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
       const svgContent = await fetchSvgFromS3(best.id);
       if (svgContent) {
-        const skeleton = svgToSkeletonWithOpts(svgContent);
+        const seg = tryAddSubsegment('svg-to-skeleton');
+        let skeleton: Skeleton | null = null;
+        try {
+          skeleton = svgToSkeletonWithOpts(svgContent);
+        } finally {
+          seg?.close();
+        }
         if (skeleton) {
           log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
           return {
@@ -416,7 +455,13 @@ export async function retrieveSkeleton(
       const svg = await traceWithPotrace(pngBuffer);
       if (svg) {
         log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 Potrace SVG traced');
-        const skeleton = svgToSkeletonWithOpts(svg);
+        const seg = tryAddSubsegment('svg-to-skeleton');
+        let skeleton: Skeleton | null = null;
+        try {
+          skeleton = svgToSkeletonWithOpts(svg);
+        } finally {
+          seg?.close();
+        }
         if (skeleton) {
           l4Result = {
             match: { source: 'generated', id: `generated:${normalised}`, similarity: 0, layer: 4, svgPath: svg },
@@ -433,43 +478,96 @@ export async function retrieveSkeleton(
     const candidates = await l3Candidates(normalised, apiKey, l3Controller.signal);
     log.debug({ candidates, durationMs: Date.now() - t0 }, 'L3 candidates');
 
-    if (candidates.length > 0) {
-      const vecs = await embedBatch(candidates, apiKey);
-      log.debug({ durationMs: Date.now() - t0 }, 'L3 batch embed done');
-      const trail: TrailEntry[] = [];
-      for (let i = 0; i < candidates.length; i++) {
-        const vec = vecs[i];
-        if (!vec) {
-          trail.push({ candidate: candidates[i], hitId: null, sim: null });
-          continue;
-        }
-        const results = await searchPinecone(vec);
-        const best = bestAboveThresholdL3(results);
-        if (best) {
-          trail.push({ candidate: candidates[i], hitId: best.id, sim: best.similarity });
-          log.info({ via: candidates[i], id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L3 hit');
-          const svgContent = await fetchSvgFromS3(best.id);
-          if (svgContent) {
-            const skeleton = svgToSkeletonWithOpts(svgContent);
-            if (skeleton) {
-              clearTimeout(timer);
-              l4Controller.abort();
-              return {
-                match: { source: best.source as 'phosphor' | 'phylopic' | 'custom', id: best.id, similarity: best.similarity, layer: 3, svgPath: svgContent, trail },
-                skeletons: [skeleton],
-              };
-            }
-            log.warn({ via: candidates[i], durationMs: Date.now() - t0 }, 'L3 skeleton null');
-          } else {
-            log.warn({ via: candidates[i], id: best.id, durationMs: Date.now() - t0 }, 'L3 S3 fetch failed');
-          }
-        } else {
-          trail.push({ candidate: candidates[i], hitId: null, sim: null });
-        }
+    if (candidates.length === 0) {
+      log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
+      return null;
+    }
+
+    const vecs = await embedBatch(candidates, apiKey);
+    log.debug({ durationMs: Date.now() - t0 }, 'L3 batch embed done');
+
+    if (l3Controller.signal.aborted) return null;
+
+    // Run all Pinecone queries in parallel
+    const pineconeResults = await Promise.all(
+      vecs.map((vec) => vec ? searchPinecone(vec) : Promise.resolve<SearchResult[]>([])),
+    );
+
+    if (l3Controller.signal.aborted) return null;
+
+    // Collect hits above threshold in candidate-index order
+    interface L3Hit { candidateIdx: number; id: string; similarity: number; source: string }
+    const hits: L3Hit[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      if (!vecs[i]) continue;
+      const best = bestAboveThresholdL3(pineconeResults[i]);
+      if (best) hits.push({ candidateIdx: i, id: best.id, similarity: best.similarity, source: best.source });
+    }
+
+    if (hits.length === 0) {
+      log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
+      return null;
+    }
+
+    // Fetch S3 SVGs for all hits in parallel
+    const svgContents = await Promise.all(hits.map((h) => fetchSvgFromS3(h.id)));
+
+    // Find first valid skeleton in candidate-index order
+    let winnerHitIdx: number | null = null;
+    let winnerSkeleton: Skeleton | null = null;
+    for (let hi = 0; hi < hits.length; hi++) {
+      const svgContent = svgContents[hi];
+      if (!svgContent) continue;
+      const seg = tryAddSubsegment('svg-to-skeleton');
+      let skeleton: Skeleton | null = null;
+      try {
+        skeleton = svgToSkeletonWithOpts(svgContent);
+      } finally {
+        seg?.close();
+      }
+      if (skeleton) {
+        winnerHitIdx = hi;
+        winnerSkeleton = skeleton;
+        break;
       }
     }
-    log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
-    return null;
+
+    // Build trail: only the winning candidate records hitId/sim; all others get null
+    const trail: TrailEntry[] = candidates.map((candidate, i) => {
+      if (!vecs[i]) return { candidate, hitId: null, sim: null };
+      const winnerHit = winnerHitIdx !== null ? hits[winnerHitIdx] : null;
+      if (winnerHit?.candidateIdx === i) {
+        return { candidate, hitId: winnerHit.id, sim: winnerHit.similarity };
+      }
+      return { candidate, hitId: null, sim: null };
+    });
+
+    if (winnerHitIdx === null || !winnerSkeleton) {
+      log.info({ durationMs: Date.now() - t0 }, 'L3 miss');
+      return null;
+    }
+
+    const winnerHit = hits[winnerHitIdx];
+    log.info({
+      via: candidates[winnerHit.candidateIdx],
+      id: winnerHit.id,
+      similarity: winnerHit.similarity.toFixed(3),
+      durationMs: Date.now() - t0,
+    }, 'L3 hit');
+
+    clearTimeout(timer);
+    l4Controller.abort();
+    return {
+      match: {
+        source: winnerHit.source as 'phosphor' | 'phylopic' | 'custom',
+        id: winnerHit.id,
+        similarity: winnerHit.similarity,
+        layer: 3,
+        svgPath: svgContents[winnerHitIdx]!,
+        trail,
+      },
+      skeletons: [winnerSkeleton],
+    };
   })();
 
   const l3Result = await l3Task;

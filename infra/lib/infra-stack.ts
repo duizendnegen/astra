@@ -106,6 +106,7 @@ export class InfraStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/src/skeleton.ts'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(30),
+      tracing: lambda.Tracing.ACTIVE,
       projectRoot: path.join(__dirname, '../..'),
       depsLockFilePath: path.join(__dirname, '../../lambda/package-lock.json'),
       bundling: {
