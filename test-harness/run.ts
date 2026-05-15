@@ -72,6 +72,11 @@ interface WordDiagnostic {
   shapeScore: number;
   vertexFitScore: number;
   procrustesScore?: number;
+  selectedScore?: number;
+  topScore?: number;
+  nextBestScore?: number;
+  acceptableCount?: number;
+  distantCount?: number;
   physVerts: { ra: number; dec: number }[];
   vertexAssignments: VertexAssignment[];
 }
@@ -341,6 +346,11 @@ async function runSuite(runId: string, reportsDir: string, fixturesDir: string, 
         shapeScore: matchResult.shapeScore,
         vertexFitScore: matchResult.vertexFitScore,
         procrustesScore: matchResult.procrustesScore,
+        selectedScore: matchResult.selectedScore,
+        topScore: matchResult.topScore,
+        nextBestScore: matchResult.nextBestScore,
+        acceptableCount: matchResult.acceptableCount,
+        distantCount: matchResult.distantCount,
         physVerts,
         vertexAssignments,
       };
