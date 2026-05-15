@@ -1280,5 +1280,10 @@ export function match(
     phase3Candidates: selected.phase3Candidates,
     skeletonPoints: selected.skeletonRaDec,
     variantIndex: selected.variantIndex,
+    selectedScore: selected.score,
+    topScore,
+    nextBestScore: pool[1]?.score,
+    acceptableCount: acceptable.length,
+    distantCount: distant.length,
   };
 }

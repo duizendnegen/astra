@@ -25,6 +25,11 @@ export interface MatchResult {
   phase3Candidates?: number;
   skeletonPoints?: { ra: number; dec: number }[];
   variantIndex?: number;
+  selectedScore?: number;
+  topScore?: number;
+  nextBestScore?: number;
+  acceptableCount?: number;
+  distantCount?: number;
 }
 
 export interface TrailEntry {

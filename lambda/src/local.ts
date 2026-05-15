@@ -13,8 +13,9 @@ const log = createLogger('local');
 const PORT = 3001;
 const API_KEY = process.env.OPENROUTER_API_KEY ?? '';
 
-if (!API_KEY) {
-  log.warn('OPENROUTER_API_KEY not set — LLM calls will fail. Set it in .env.local.');
+const REQUIRED_ENV_VARS = ['PINECONE_API_KEY', 'PINECONE_INDEX_NAME', 'ICONS_BUCKET_NAME', 'OPENROUTER_API_KEY'];
+for (const v of REQUIRED_ENV_VARS) {
+  if (!process.env[v]) log.warn({ var: v }, `${v} not set — pipeline calls may fail`);
 }
 
 // In-memory cache (keyed by word — retrieval pipeline is deterministic for same index)
@@ -35,7 +36,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method !== 'POST' || req.url !== '/api/constellation') {
+  if (req.method !== 'POST' || (req.url !== '/api/constellation' && req.url !== '/api/skeleton')) {
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'not found' }));
     return;
@@ -52,6 +53,27 @@ const server = http.createServer(async (req, res) => {
   } catch {
     res.writeHead(400);
     res.end(JSON.stringify({ error: 'word is required' }));
+    return;
+  }
+
+  if (req.url === '/api/skeleton') {
+    let pipelineResult: PipelineResult;
+    if (cache.has(word)) {
+      log.info({ word }, 'Cache hit (skeleton)');
+      pipelineResult = cache.get(word)!;
+    } else {
+      log.info({ word }, 'Retrieving skeleton');
+      pipelineResult = await retrieveSkeleton(word, API_KEY);
+      if (pipelineResult.skeletons.length === 0) {
+        res.writeHead(422);
+        res.end(JSON.stringify({ error: 'No constellation found.' }));
+        return;
+      }
+      cache.set(word, pipelineResult);
+      log.info({ word }, 'Pipeline complete (skeleton)');
+    }
+    res.writeHead(200);
+    res.end(JSON.stringify({ match: pipelineResult.match, skeletons: pipelineResult.skeletons }));
     return;
   }
 
