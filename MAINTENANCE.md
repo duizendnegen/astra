@@ -52,6 +52,15 @@ environment: {
 
 Alternatively, instrument manually with `@aws/aws-distro-opentelemetry-node-autoinstrumentation` and `@opentelemetry/exporter-trace-otlp-http` for more control.
 
+### Why not fix aws-xray-sdk in place
+
+The SDK provides two APIs that look relevant but don't resolve the issue:
+
+- **`captureAsyncFunc(name, callback)`** — the correct API for async subsegments (vs. our `addNewSubsegment()` + manual `finally` close). But it still calls `resolveSegment()` internally to find the parent; if `cls-hooked` has already lost context, it hits the same wall. Swapping our `tryAddSubsegment` pattern for `captureAsyncFunc` is a refactor, not a fix.
+- **`captureHTTPsGlobal(http)`** — patches the built-in `http`/`https` modules for automatic tracing. All external calls in this codebase (OpenRouter, Pinecone) use Node.js native `fetch` (backed by `undici`), a separate code path this patch does not reach.
+
+The only fix within aws-xray-sdk would be **manual mode** (`AWS_XRAY_MANUAL_MODE=true`): retrieve the segment once at handler entry where CLS context is still valid, then thread it explicitly through every function signature that creates subsegments. That is invasive enough to not be worth doing on a maintenance-mode SDK — ADOT is the right path.
+
 **Steps:**
 - Remove `aws-xray-sdk` from `lambda/package.json` dependencies and `nodeModules` in CDK bundling
 - Remove `captureAWSv3Client` wrapping and `tryAddSubsegment` calls from `retrieval.ts` and `skeleton.ts`
