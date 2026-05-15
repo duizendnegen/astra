@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
             lambda/package-lock.json
@@ -46,7 +46,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
             frontend/package-lock.json
@@ -63,6 +63,8 @@ jobs:
       - name: Install infra deps
         run: npm ci
         working-directory: infra
+
+      - uses: docker/setup-qemu-action@v3
 
       - name: Configure AWS credentials (read-only OIDC role)
         uses: aws-actions/configure-aws-credentials@v4
@@ -88,7 +90,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
             lambda/package-lock.json

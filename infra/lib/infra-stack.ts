@@ -97,22 +97,31 @@ export class InfraStack extends cdk.Stack {
       { parameterName: '/astra/pinecone-api-key' },
     );
 
+    // ── ADOT Lambda layer (arm64) ────────────────────────────────────────
+    const adotLayer = lambda.LayerVersion.fromLayerVersionArn(
+      this,
+      'AdotLayer',
+      `arn:aws:lambda:${this.region}:901920570463:layer:aws-otel-nodejs-arm64-ver-1-30-2:1`,
+    );
+
     // ── Lambda skeleton function ─────────────────────────────────────────
     // projectRoot is set to the repo root so that Docker bundling mounts the
     // whole workspace (giving esbuild access to lambda/ from infra/).
     const skeletonFn = new lambdaNodejs.NodejsFunction(this, 'SkeletonFn', {
       functionName: 'astra-skeleton',
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
       entry: path.join(__dirname, '../../lambda/src/skeleton.ts'),
       handler: 'handler',
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60),
       tracing: lambda.Tracing.ACTIVE,
+      layers: [adotLayer],
       projectRoot: path.join(__dirname, '../..'),
       depsLockFilePath: path.join(__dirname, '../../lambda/package-lock.json'),
       bundling: {
         forceDockerBundling: true,
-        externalModules: ['@aws-sdk/*', '@smithy/*'],
-        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping', 'aws-xray-sdk'],
+        externalModules: ['@aws-sdk/*', '@smithy/*', '@opentelemetry/api'],
+        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
@@ -130,6 +139,7 @@ export class InfraStack extends cdk.Stack {
         NODE_ENV: 'production',
         PINECONE_INDEX_NAME: 'astra-prod-icons',
         PINECONE_HOST: 'https://astra-prod-icons-ylyik2p.svc.aped-4627-b74a.pinecone.io',
+        AWS_LAMBDA_EXEC_WRAPPER: '/opt/otel-handler',
       },
     });
 

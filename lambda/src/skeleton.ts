@@ -2,8 +2,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import AWSXRay from 'aws-xray-sdk';
-const { captureAWSv3Client, resolveSegment } = AWSXRay;
+import { trace } from '@opentelemetry/api';
 import { retrieveSkeleton, type MatchProvenance } from './retrieval.js';
 import { match } from './matcher.js';
 import { getCatalogue } from './catalogue.js';
@@ -11,10 +10,10 @@ import type { Skeleton, MatchResult } from './types.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('skeleton');
+const tracer = trace.getTracer('astra-lambda');
 
-// Patch AWS SDK clients for X-Ray automatic sub-segment capture
-const dynamo = DynamoDBDocumentClient.from(captureAWSv3Client(new DynamoDBClient({})));
-const ssmClient = captureAWSv3Client(new SSMClient({ region: process.env.AWS_REGION ?? 'eu-central-1' }));
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const ssmClient = new SSMClient({ region: process.env.AWS_REGION ?? 'eu-central-1' });
 
 const TABLE_NAME = process.env.TABLE_NAME!;
 
@@ -33,16 +32,6 @@ interface CacheItem {
   match?: MatchProvenance | null;
   skeletons: Skeleton[];
   matchResult?: MatchResult;
-}
-
-function tryAddSubsegment(name: string) {
-  try {
-    const seg = resolveSegment();
-    return seg?.addNewSubsegment(name) ?? null;
-  } catch {
-    log.debug({ name }, 'no active X-Ray segment');
-    return null;
-  }
 }
 
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
@@ -81,13 +70,13 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Backward-compat: cached item has skeletons but no matchResult — run matcher and write back
-    const seg = tryAddSubsegment('matcher');
-    let cachedMatchResult: MatchResult | null = null;
-    try {
-      cachedMatchResult = match(catalogue, item.skeletons);
-    } finally {
-      seg?.close();
-    }
+    const cachedMatchResult = tracer.startActiveSpan('matcher', (span) => {
+      try {
+        return match(catalogue, item.skeletons);
+      } finally {
+        span.end();
+      }
+    });
     if (cachedMatchResult) {
       const skeleton = item.skeletons[cachedMatchResult.variantIndex ?? 0];
       await dynamo.send(
@@ -113,13 +102,13 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return { statusCode: 422, headers, body: JSON.stringify({ error: 'No constellation found.' }) };
   }
 
-  const seg = tryAddSubsegment('matcher');
-  let matchResult: MatchResult | null = null;
-  try {
-    matchResult = match(catalogue, result.skeletons);
-  } finally {
-    seg?.close();
-  }
+  const matchResult = tracer.startActiveSpan('matcher', (span) => {
+    try {
+      return match(catalogue, result.skeletons);
+    } finally {
+      span.end();
+    }
+  });
 
   if (!matchResult) {
     log.info({ word, durationMs: Math.round(performance.now() - t0), cacheHit: false }, 'request complete');

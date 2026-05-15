@@ -12,8 +12,7 @@
 import { Pinecone } from '@pinecone-database/pinecone';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import AWSXRay from 'aws-xray-sdk';
-const { captureAWSv3Client, resolveSegment } = AWSXRay;
+import { trace } from '@opentelemetry/api';
 import * as potrace from 'potrace';
 import type { Skeleton } from './core.js';
 import type { TrailEntry } from './types.js';
@@ -22,6 +21,7 @@ import { createLogger } from './logger.js';
 import path from 'path';
 
 const log = createLogger('retrieval');
+const tracer = trace.getTracer('astra-lambda');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -77,12 +77,11 @@ interface PineconeMatch {
 // API key resolution is lazy-async: the promise is kicked off immediately so
 // that on warm invocations the key is already resolved.
 
-// Patch S3 client for X-Ray automatic sub-segment capture
-const s3 = captureAWSv3Client(new S3Client(
+const s3 = new S3Client(
   process.env.AWS_ENDPOINT_URL
     ? { endpoint: process.env.AWS_ENDPOINT_URL, forcePathStyle: true, region: process.env.AWS_REGION ?? 'us-east-1' }
     : {},
-));
+);
 
 let _pineconeIndex: ReturnType<InstanceType<typeof Pinecone>['index']> | null = null;
 
@@ -114,18 +113,6 @@ const _pineconeReady: Promise<void> = (async () => {
 async function getPineconeIndex() {
   await _pineconeReady;
   return _pineconeIndex;
-}
-
-// ── X-Ray sub-segment helper ──────────────────────────────────────────────────
-
-function tryAddSubsegment(name: string) {
-  try {
-    const seg = resolveSegment();
-    return seg?.addNewSubsegment(name) ?? null;
-  } catch {
-    log.debug({ name }, 'no active X-Ray segment');
-    return null;
-  }
 }
 
 // ── S3 SVG fetch ──────────────────────────────────────────────────────────────
@@ -172,17 +159,18 @@ async function embedBatch(texts: string[], apiKey: string): Promise<(number[] | 
   if (texts.length === 0) return [];
   try {
     const t0 = Date.now();
-    const seg = tryAddSubsegment('embed');
     let res!: Response;
-    try {
-      res = await fetch(`${OPENROUTER_BASE}/embeddings`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
-      });
-    } finally {
-      seg?.close();
-    }
+    await tracer.startActiveSpan('embed', async (span) => {
+      try {
+        res = await fetch(`${OPENROUTER_BASE}/embeddings`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
+        });
+      } finally {
+        span.end();
+      }
+    });
     if (!res.ok) {
       log.warn({ status: res.status }, 'embed HTTP error');
       return texts.map(() => null);
@@ -270,21 +258,22 @@ const L3_PROMPT = (word: string) =>
 
 async function l3Candidates(word: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
   try {
-    const seg = tryAddSubsegment('l3-candidates');
     let res!: Response;
-    try {
-      res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: process.env.SKELETON_MODEL ?? 'anthropic/claude-haiku-4.5',
-          messages: [{ role: 'user', content: L3_PROMPT(word) }],
-        }),
-        signal,
-      });
-    } finally {
-      seg?.close();
-    }
+    await tracer.startActiveSpan('l3-candidates', async (span) => {
+      try {
+        res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: process.env.SKELETON_MODEL ?? 'anthropic/claude-haiku-4.5',
+            messages: [{ role: 'user', content: L3_PROMPT(word) }],
+          }),
+          signal,
+        });
+      } finally {
+        span.end();
+      }
+    });
     if (!res.ok) return [];
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const content = data.choices?.[0]?.message?.content ?? '';
@@ -306,21 +295,22 @@ const L4_IMAGE_PROMPT = (word: string) =>
 
 export async function l4GenerateFromImage(word: string, apiKey: string, signal?: AbortSignal): Promise<Buffer | null> {
   try {
-    const seg = tryAddSubsegment('l4-image-gen');
     let res!: Response;
-    try {
-      res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: L4_IMAGE_MODEL,
-          messages: [{ role: 'user', content: L4_IMAGE_PROMPT(word) }],
-        }),
-        signal,
-      });
-    } finally {
-      seg?.close();
-    }
+    await tracer.startActiveSpan('l4-image-gen', async (span) => {
+      try {
+        res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: L4_IMAGE_MODEL,
+            messages: [{ role: 'user', content: L4_IMAGE_PROMPT(word) }],
+          }),
+          signal,
+        });
+      } finally {
+        span.end();
+      }
+    });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       log.warn({ status: res.status, model: L4_IMAGE_MODEL, body: body.slice(0, 200) }, 'L4 image gen HTTP error');
@@ -405,13 +395,13 @@ export async function retrieveSkeleton(
       log.info({ id: best.id, similarity: best.similarity.toFixed(3), durationMs: Date.now() - t0 }, 'L1 hit');
       const svgContent = await fetchSvgFromS3(best.id);
       if (svgContent) {
-        const seg = tryAddSubsegment('svg-to-skeleton');
-        let skeleton: Skeleton | null = null;
-        try {
-          skeleton = svgToSkeletonWithOpts(svgContent);
-        } finally {
-          seg?.close();
-        }
+        const skeleton = tracer.startActiveSpan('svg-to-skeleton', (span) => {
+          try {
+            return svgToSkeletonWithOpts(svgContent);
+          } finally {
+            span.end();
+          }
+        });
         if (skeleton) {
           log.debug({ durationMs: Date.now() - t0 }, 'L1 skeleton ok');
           return {
@@ -455,13 +445,13 @@ export async function retrieveSkeleton(
       const svg = await traceWithPotrace(pngBuffer);
       if (svg) {
         log.debug({ svgLen: svg.length, durationMs: Date.now() - t0 }, 'L4 Potrace SVG traced');
-        const seg = tryAddSubsegment('svg-to-skeleton');
-        let skeleton: Skeleton | null = null;
-        try {
-          skeleton = svgToSkeletonWithOpts(svg);
-        } finally {
-          seg?.close();
-        }
+        const skeleton = tracer.startActiveSpan('svg-to-skeleton', (span) => {
+          try {
+            return svgToSkeletonWithOpts(svg);
+          } finally {
+            span.end();
+          }
+        });
         if (skeleton) {
           l4Result = {
             match: { source: 'generated', id: `generated:${normalised}`, similarity: 0, layer: 4, svgPath: svg },
@@ -518,13 +508,13 @@ export async function retrieveSkeleton(
     for (let hi = 0; hi < hits.length; hi++) {
       const svgContent = svgContents[hi];
       if (!svgContent) continue;
-      const seg = tryAddSubsegment('svg-to-skeleton');
-      let skeleton: Skeleton | null = null;
-      try {
-        skeleton = svgToSkeletonWithOpts(svgContent);
-      } finally {
-        seg?.close();
-      }
+      const skeleton = tracer.startActiveSpan('svg-to-skeleton', (span) => {
+        try {
+          return svgToSkeletonWithOpts(svgContent);
+        } finally {
+          span.end();
+        }
+      });
       if (skeleton) {
         winnerHitIdx = hi;
         winnerSkeleton = skeleton;

@@ -15,13 +15,6 @@ const mockS3Send = vi.hoisted(() => vi.fn());
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
-vi.mock('aws-xray-sdk', () => ({
-  default: {
-    captureAWSv3Client: (client: unknown) => client,
-    resolveSegment: () => undefined,
-  },
-}));
-
 vi.mock('@pinecone-database/pinecone', () => ({
   Pinecone: vi.fn().mockImplementation(() => ({
     index: vi.fn().mockReturnValue({ query: mockPineconeQuery }),
