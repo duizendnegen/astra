@@ -112,7 +112,7 @@ export class InfraStack extends cdk.Stack {
       bundling: {
         forceDockerBundling: true,
         externalModules: ['@aws-sdk/*', '@smithy/*'],
-        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
+        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping', 'aws-xray-sdk'],
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
