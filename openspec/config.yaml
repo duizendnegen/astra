@@ -1,9 +1,8 @@
-schema: spec-driven
+schema: enpal-spec-driven
 
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
 context: |
   Use Docker Compose to run the application. Restarted explicitly after every change.
   After each relevant change, add tests and run the test harness.
@@ -12,9 +11,7 @@ context: |
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
 rules:
-  # explore:
-  #   - Summarize the problem before asking questions.
-  #   - Ask one clarifying question at a time.
-  #   - Keep a history of options and which solution was picked to embed that into the proposal.
+  explore:
+    - When referencing libraries or external dependencies, do a web search for relevant documentation.
   tasks:
     - Add visual testing with the Playwright MCP server and a test harness run after each relevant change as part of tasks.

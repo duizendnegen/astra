@@ -62,12 +62,34 @@ The `aws-xray-sdk` package SHALL NOT appear in `lambda/package.json` dependencie
 - **WHEN** the CDK deployment asset for the Lambda is inspected
 - **THEN** `aws-xray-sdk` is not present in `node_modules`
 
-### Requirement: @opentelemetry/api marked external in CDK bundling
-`@opentelemetry/api` SHALL be listed in the CDK `externalModules` array alongside `@aws-sdk/*`. It SHALL NOT be listed in `nodeModules`. The ADOT layer provides this package at runtime.
+### Requirement: @opentelemetry/api bundled via nodeModules in CDK bundling
+`@opentelemetry/api` SHALL be listed in the CDK `nodeModules` array so that it is bundled into the Lambda deployment package. It SHALL NOT be listed in `externalModules`. Although the ADOT layer ships its own copy of `@opentelemetry/api`, the layer does not expose it as a standalone resolvable package path, so marking it external causes a module-not-found error at cold start. The two-instance concern (bundled copy vs. layer copy) does not apply because `@opentelemetry/api` >=1.0 uses `Symbol.for('opentelemetry.js.api.1')` globals: both copies register and resolve the `TracerProvider` through the same global key, so the bundled copy and the layer's copy share the same active tracer context.
 
-#### Scenario: @opentelemetry/api resolved from ADOT layer
-- **WHEN** the Lambda handler imports from `@opentelemetry/api`
-- **THEN** the import resolves to the copy shipped in the ADOT layer without bundling error
+#### Scenario: @opentelemetry/api import resolves at cold start
+- **WHEN** the Lambda handler cold-starts with the ADOT layer attached
+- **THEN** the import of `@opentelemetry/api` resolves without a module-not-found error
+
+#### Scenario: TracerProvider shared across bundled and layer copies
+- **WHEN** the Lambda is invoked and a manual span is started via `trace.getTracer('astra-lambda')`
+- **THEN** the span is recorded under the TracerProvider registered by the ADOT layer (i.e., the two copies share the same `Symbol.for` global)
+
+### Requirement: OTEL_SERVICE_NAME set on Lambda
+The Lambda function SHALL have the environment variable `OTEL_SERVICE_NAME` set to `astra-skeleton`. This names the service in the X-Ray service map and in OpenTelemetry resource attributes.
+
+#### Scenario: Service name appears in X-Ray trace
+- **WHEN** a Lambda invocation is traced in X-Ray
+- **THEN** the service is identified as `astra-skeleton` in the service map
+
+### Requirement: OTEL_NODE_ENABLED_INSTRUMENTATIONS scoped to aws-lambda and aws-sdk
+The Lambda function SHALL have the environment variable `OTEL_NODE_ENABLED_INSTRUMENTATIONS` set to `aws-lambda,aws-sdk`. The `http` instrumentation SHALL NOT be enabled to avoid duplicate spans for OpenRouter `fetch()` calls that are already wrapped in manual `startActiveSpan` calls.
+
+#### Scenario: DynamoDB call appears as auto-instrumented subsegment
+- **WHEN** the Lambda reads from the DynamoDB skeleton cache
+- **THEN** the X-Ray trace contains a subsegment for the DynamoDB call produced by the `aws-sdk` auto-instrumentation (not a manual span)
+
+#### Scenario: No duplicate spans for OpenRouter fetch calls
+- **WHEN** the Lambda calls `embedBatch` which wraps a `fetch()` in a manual `embed` span
+- **THEN** the X-Ray trace contains exactly one `embed` subsegment (not an additional http subsegment wrapping the same call)
 
 ### Requirement: DynamoDB skeleton cache table
 The system SHALL provision a DynamoDB table in on-demand billing mode with `word` (string) as the partition key. No TTL is configured. The Lambda SHALL have IAM permissions to read and write this table.

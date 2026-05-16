@@ -32,14 +32,18 @@ The two bugs must be fixed together; fixing one without the other leaves tracing
 - *Newer ADOT layer version*: `ver-1-30-2` is already the latest; no upstream fix exists.
 - *Manual SDK init without wrapper*: would require bundling `@opentelemetry/sdk-trace-node`, `@opentelemetry/instrumentation-aws-lambda`, and a custom X-Ray exporter. Significantly more code and bundle weight for the same result.
 
-### D2 — Move `@opentelemetry/api` back to `externalModules`
+### D2 — Keep `@opentelemetry/api` bundled via `nodeModules`
 
-**Decision:** Remove `@opentelemetry/api` from `nodeModules` and add it to `externalModules` in the CDK bundling config. Remove it from `lambda/package.json` production dependencies.
+**Decision:** Keep `@opentelemetry/api` in `nodeModules` in the CDK bundling config and in `lambda/package.json` production dependencies.
 
-**Rationale:** `@opentelemetry/api` uses a global singleton — `trace.getTracer()` returns the provider registered via `trace.setGlobalTracerProvider()`, but only within the same physical module instance. With two bundled copies, the ADOT layer registers on its copy while handler code calls into the bundled copy — guaranteed no-op. Making it external forces all resolution to the single layer copy. This was previously blocked because Node 22 couldn't find the layer's copy without the wrapper setting `NODE_PATH`; fixing D1 unblocks this.
+**Rationale:** The original plan was to move it to `externalModules` to avoid a "two-instance" problem. That plan was invalidated on two grounds:
+
+1. **The two-instance concern was a misdiagnosis.** `@opentelemetry/api` ≥1.0 stores the global `TracerProvider` at `global[Symbol.for('opentelemetry.js.api.1')]` — a key shared across all `require()` instances in the same Node.js process. Even with two separate copies of the package loaded (one bundled, one from the layer), both copies read and write the same global slot. The ADOT wrapper's registered provider is therefore visible to bundled handler code.
+
+2. **The ADOT layer does not expose `@opentelemetry/api` as a standalone resolvable package.** Moving to `externalModules` caused `Runtime.ImportModuleError: Cannot find module '@opentelemetry/api'` on every invocation — confirmed in CloudWatch Logs. The layer bundles `@opentelemetry/api` internally within its SDK but does not install it at a path reachable via `NODE_PATH`.
 
 **Alternatives considered:**
-- *Keep bundled copy, call `trace.setGlobalTracerProvider()` manually*: requires bundling the full OTel SDK to have something to init, and duplicates what the ADOT layer already does.
+- *Move to `externalModules`*: attempted during implementation; caused `Runtime.ImportModuleError` crash. Reverted.
 
 ### D3 — Enable selective auto-instrumentation
 
@@ -50,7 +54,7 @@ The two bugs must be fixed together; fixing one without the other leaves tracing
 ## Risks / Trade-offs
 
 - **`module.exports` and TypeScript types**: Mixing `import` statements and `module.exports` in the same TypeScript file is unusual. esbuild handles it correctly (CJS output), and TypeScript with `esModuleInterop: true` accepts it without errors. If `tsconfig` `module` is ever changed to `nodenext` or `esnext`, this pattern would need revisiting.
-- **`@opentelemetry/api` resolution at runtime**: If for any reason `AWS_LAMBDA_EXEC_WRAPPER` is not set (e.g., env var accidentally removed), the layer's `@opentelemetry/api` may not be on `NODE_PATH` and the Lambda would crash at import. The two env var changes (`AWS_LAMBDA_EXEC_WRAPPER` and `externalModules`) are coupled and must be deployed together. CDK deploy is atomic so this is safe.
+- **`@opentelemetry/api` is bundled, not from the layer**: If `AWS_LAMBDA_EXEC_WRAPPER` is accidentally removed, the bundled `@opentelemetry/api` will still load and the Lambda will serve requests normally — tracing becomes a silent no-op rather than a crash. This is a safe degradation mode.
 - **Cold start overhead**: The ADOT wrapper adds OTel SDK initialisation to the cold start path. Expected impact is 100-300 ms on cold starts only. Warm invocations are unaffected.
 
 ## Migration Plan

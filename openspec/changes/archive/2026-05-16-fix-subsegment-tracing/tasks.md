@@ -17,9 +17,9 @@
 
 ## 4. Deploy and verify
 
-- [ ] 4.1 Commit changes and push to trigger CI deploy
-- [ ] 4.2 After deploy, invoke the Lambda with a known word (e.g. "pheromone") via the browser or curl
-- [ ] 4.3 In AWS X-Ray console, find the trace and verify custom subsegments appear: `embed`, `matcher`, and at least one of `l3-candidates` / `l4-image-gen` / `svg-to-skeleton`
-- [ ] 4.4 Verify DynamoDB and S3 subsegments appear automatically from `aws-sdk` instrumentation
-- [ ] 4.5 Verify CloudWatch Logs contain no `TypeError: Cannot redefine property: handler` errors
-- [ ] 4.6 Verify the Lambda returns 200 responses (no regression)
+- [x] 4.1 Commit changes and push to trigger CI deploy
+- [x] 4.2 After deploy, invoke the Lambda with a known word (e.g. "pheromone") via the browser or curl
+- [x] 4.3 In AWS X-Ray console, find the trace and verify custom subsegments appear: `embed`, `matcher`, and at least one of `l3-candidates` / `l4-image-gen` / `svg-to-skeleton`
+- [x] 4.4 Verify DynamoDB and S3 subsegments appear automatically from `aws-sdk` instrumentation
+- [x] 4.5 Verify CloudWatch Logs contain no `TypeError: Cannot redefine property: handler` errors
+- [x] 4.6 Verify the Lambda returns 200 responses (no regression)
