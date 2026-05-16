@@ -138,4 +138,4 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
   };
 }
 
-export { handler };
+module.exports = { handler };
