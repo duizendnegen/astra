@@ -121,8 +121,8 @@ export class InfraStack extends cdk.Stack {
       depsLockFilePath: path.join(__dirname, '../../lambda/package-lock.json'),
       bundling: {
         forceDockerBundling: true,
-        externalModules: ['@aws-sdk/*', '@smithy/*'],
-        nodeModules: ['@opentelemetry/api', '@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
+        externalModules: ['@aws-sdk/*', '@smithy/*', '@opentelemetry/api'],
+        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
@@ -140,6 +140,9 @@ export class InfraStack extends cdk.Stack {
         NODE_ENV: 'production',
         PINECONE_INDEX_NAME: 'astra-prod-icons',
         PINECONE_HOST: 'https://astra-prod-icons-ylyik2p.svc.aped-4627-b74a.pinecone.io',
+        AWS_LAMBDA_EXEC_WRAPPER: '/opt/otel-handler',
+        OTEL_SERVICE_NAME: 'astra-skeleton',
+        OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'aws-lambda,aws-sdk',
       },
     });
 

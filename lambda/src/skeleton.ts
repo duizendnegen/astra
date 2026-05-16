@@ -34,7 +34,7 @@ interface CacheItem {
   matchResult?: MatchResult;
 }
 
-export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   const headers = {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': 'https://astra.plusx.black',
@@ -130,3 +130,5 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     body: JSON.stringify({ constellation: matchResult, skeleton, match: result.match }),
   };
 }
+
+module.exports = { handler };
