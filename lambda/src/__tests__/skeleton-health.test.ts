@@ -4,17 +4,17 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 const { mockDynamoSend } = vi.hoisted(() => ({ mockDynamoSend: vi.fn() }));
 
 vi.mock('@aws-sdk/client-dynamodb', () => ({
-  DynamoDBClient: vi.fn().mockImplementation(() => ({})),
+  DynamoDBClient: vi.fn(),
 }));
 
 vi.mock('@aws-sdk/lib-dynamodb', () => ({
   DynamoDBDocumentClient: { from: vi.fn().mockReturnValue({ send: mockDynamoSend }) },
-  GetCommand: vi.fn((input: unknown) => input),
-  PutCommand: vi.fn((input: unknown) => input),
+  GetCommand: vi.fn(function(input: unknown) { return input; }),
+  PutCommand: vi.fn(function(input: unknown) { return input; }),
 }));
 
 vi.mock('@aws-sdk/client-ssm', () => ({
-  SSMClient: vi.fn().mockImplementation(() => ({ send: vi.fn() })),
+  SSMClient: vi.fn().mockImplementation(function() { return { send: vi.fn() }; }),
   GetParameterCommand: vi.fn(),
 }));
 

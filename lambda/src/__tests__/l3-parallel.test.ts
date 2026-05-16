@@ -6,7 +6,7 @@
  *      is returned (first-in-order wins) and the trail is correct.
  */
 
-import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach, type MockInstance } from 'vitest';
 
 // ── Shared mock state ─────────────────────────────────────────────────────────
 
@@ -16,23 +16,23 @@ const mockS3Send = vi.hoisted(() => vi.fn());
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
 vi.mock('@pinecone-database/pinecone', () => ({
-  Pinecone: vi.fn().mockImplementation(() => ({
-    index: vi.fn().mockReturnValue({ query: mockPineconeQuery }),
-  })),
+  Pinecone: vi.fn().mockImplementation(function() {
+    return { index: vi.fn().mockReturnValue({ query: mockPineconeQuery }) };
+  }),
 }));
 
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation(() => ({ send: mockS3Send })),
-  GetObjectCommand: vi.fn((input: unknown) => input),
+  S3Client: vi.fn().mockImplementation(function() { return { send: mockS3Send }; }),
+  GetObjectCommand: vi.fn(function(input: unknown) { return input; }),
 }));
 
 vi.mock('@aws-sdk/client-ssm', () => ({
-  SSMClient: vi.fn().mockImplementation(() => ({ send: vi.fn() })),
+  SSMClient: vi.fn().mockImplementation(function() { return { send: vi.fn() }; }),
   GetParameterCommand: vi.fn(),
 }));
 
 vi.mock('potrace', () => ({
-  trace: vi.fn((_buf: unknown, cb: (err: null, svg: string) => void) => cb(null, '')),
+  trace: vi.fn(function(_buf: unknown, cb: (err: null, svg: string) => void) { cb(null, ''); }),
 }));
 
 vi.mock('../svg-to-skeleton.js', () => ({
@@ -118,7 +118,7 @@ function buildFetchMock() {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('Parallel L3 path (8.1)', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof fetch>;
 
   beforeEach(() => {
     vi.clearAllMocks();
