@@ -161,6 +161,73 @@ describe('scorer dispatch', () => {
   });
 });
 
+// ── Phase 3 spatial-spread pool ──────────────────────────────────────────
+
+/** Two triangles ≥30° apart, both bright enough to seed anchors. */
+function twoRegionCatalogue(): Star[] {
+  return [
+    // Region A: triangle at RA=100, Dec=0 (~5° span)
+    makeStar(1, 100, 0, 2), makeStar(2, 105, 0, 2), makeStar(3, 102.5, 4, 2),
+    makeStar(4, 103, 2, 4), makeStar(5, 101, 1, 4),
+    // Region B: triangle at RA=220, Dec=0 (120° from A)
+    makeStar(6, 220, 0, 2), makeStar(7, 225, 0, 2), makeStar(8, 222.5, 4, 2),
+    makeStar(9, 223, 2, 4), makeStar(10, 221, 1, 4),
+  ];
+}
+
+/** Three triangles: A at RA=100, B at RA=220 (120° from A), C at RA=235 (140° from A, 15° from B). */
+function threeRegionCatalogue(): Star[] {
+  return [
+    // Region A: RA=100
+    makeStar(1, 100, 0, 2), makeStar(2, 105, 0, 2), makeStar(3, 102.5, 4, 2),
+    makeStar(4, 103, 2, 4), makeStar(5, 101, 1, 4),
+    // Region B: RA=220 (120° from A)
+    makeStar(6, 220, 0, 2), makeStar(7, 225, 0, 2), makeStar(8, 222.5, 4, 2),
+    makeStar(9, 223, 2, 4), makeStar(10, 221, 1, 4),
+    // Region C: RA=235 (140° from A, 15° from B)
+    makeStar(11, 235, 0, 2), makeStar(12, 240, 0, 2), makeStar(13, 237.5, 4, 2),
+    makeStar(14, 238, 2, 4), makeStar(15, 236, 1, 4),
+  ];
+}
+
+describe('Phase 3 pool diversity (spatial-spread selection)', () => {
+  const skel = triangleSkeleton();
+  const cfg = { model: 'vertex-penalty' as const, generator: 'anchor-pair' as const, seedMaxMag: 2 };
+
+  it('2.1 candidates from two sky regions make distantCount > 0', () => {
+    // Both regions match equally well → Phase 3 pool has representatives from each,
+    // so selectDiverse sees a distant acceptable candidate.
+    const result = match(twoRegionCatalogue(), [skel], cfg);
+    expect(result).not.toBeNull();
+    expect(result!.distantCount).toBeGreaterThan(0);
+  });
+
+  it('2.2 geographically thin catalogue falls back cleanly — match still succeeds', () => {
+    // All stars in one region: diversity filter exhausts distant candidates,
+    // fallback fills Phase 3 with close ones. Match must still return a result.
+    const result = match(triangleStars(), [skel], cfg);
+    expect(result).not.toBeNull();
+    expect(result!.selectedScore).toBeGreaterThan(0);
+  });
+
+  it('2.3 top-scoring candidate is always reachable — selectedScore ≤ topScore', () => {
+    // The top candidate is always the first accepted into Phase 3 (no distance check
+    // for the first entry), so topScore is always available to selectDiverse.
+    const result = match(twoRegionCatalogue(), [skel], cfg);
+    expect(result).not.toBeNull();
+    expect(result!.selectedScore).toBeLessThanOrEqual(result!.topScore + 1e-9);
+  });
+
+  it('2.4 pairwise separation — adjacent distant regions not double-counted', () => {
+    // B (RA=220) and C (RA=235) are both ≥30° from A (RA=100) but only 15° from each other.
+    // With phase3Cap=2, only one of {B,C} gets a Phase 3 diverse slot; the other is excluded.
+    // distantCount ≤ 1 confirms pairwise checking against all selected (not just top).
+    const result = match(threeRegionCatalogue(), [skel], { ...cfg, phase3Cap: 2 });
+    expect(result).not.toBeNull();
+    expect(result!.distantCount).toBeLessThanOrEqual(1);
+  });
+});
+
 // ── Phase 3 candidate pool ────────────────────────────────────────────────
 
 describe('runPhase2And3 collects all phase3 candidates', () => {

@@ -5,13 +5,16 @@ schema: enpal-spec-driven
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
 context: |
   Use Docker Compose to run the application. Restarted explicitly after every change.
+  Do not use platform-specific packages, instead rely on Docker to build cross-platform.
   After each relevant change, add tests and run the test harness.
   Write structured logging using Pino.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
 rules:
-  explore:
-    - When referencing libraries or external dependencies, do a web search for relevant documentation.
   tasks:
     - Add visual testing with the Playwright MCP server and a test harness run after each relevant change as part of tasks.
+
+skills:
+  explore:
+    - When referencing libraries or external dependencies, do a web search for relevant documentation.

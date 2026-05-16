@@ -762,7 +762,29 @@ function runPhase2And3(
   // Phase 3: full Hungarian assignment + multi-score evaluation
   const results: (ScoreResult & { seed: Star })[] = [];
 
-  const phase3Slice = greedyTop.slice(0, HUNGARIAN_K);
+  // Greedy spatial-spread: prefer candidates ≥PHASE3_MIN_SEP_DEG from all already-selected.
+  // Fallback fills remaining slots from best-scoring regardless of distance.
+  const phase3Slice: PhaseCandidate[] = [];
+  const phase3Centroids: [number, number][] = [];
+  for (const cand of greedyTop) {
+    if (phase3Slice.length >= HUNGARIAN_K) break;
+    const patchRA = cand.physVerts.reduce((s, v) => s + v[0], 0) / cand.physVerts.length;
+    const patchDec = cand.physVerts.reduce((s, v) => s + v[1], 0) / cand.physVerts.length;
+    const tooClose = phase3Centroids.some(([sRA, sDec]) =>
+      distanceDeg(patchRA, patchDec, sRA, sDec) < PHASE3_MIN_SEP_DEG,
+    );
+    if (!tooClose) {
+      phase3Slice.push(cand);
+      phase3Centroids.push([patchRA, patchDec]);
+    }
+  }
+  if (phase3Slice.length < HUNGARIAN_K) {
+    const selected = new Set(phase3Slice);
+    for (const cand of greedyTop) {
+      if (phase3Slice.length >= HUNGARIAN_K) break;
+      if (!selected.has(cand)) phase3Slice.push(cand);
+    }
+  }
   const phase3Count = phase3Slice.length;
   for (const cand of phase3Slice) {
     const { physVerts, seed } = cand;
@@ -1174,6 +1196,7 @@ function anyVertexSearch(
 const ORION_SPAN_DEG = 25;
 const DIVERSITY_TOLERANCE = 0.10;
 const DIVERSITY_MIN_DEG = 30;
+const PHASE3_MIN_SEP_DEG = 30;
 
 /** Select a candidate from a scored pool, preferring a sky-distant acceptable one over the top.
  *  Exported for unit testing; production code always uses the default random. */
