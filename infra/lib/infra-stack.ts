@@ -121,8 +121,8 @@ export class InfraStack extends cdk.Stack {
       depsLockFilePath: path.join(__dirname, '../../lambda/package-lock.json'),
       bundling: {
         forceDockerBundling: true,
-        externalModules: ['@aws-sdk/*', '@smithy/*', '@opentelemetry/api'],
-        nodeModules: ['@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
+        externalModules: ['@aws-sdk/*', '@smithy/*'],
+        nodeModules: ['@opentelemetry/api', '@pinecone-database/pinecone', 'potrace', 'pino', 'polygon-clipping'],
         commandHooks: {
           beforeBundling: () => [],
           beforeInstall: () => [],
