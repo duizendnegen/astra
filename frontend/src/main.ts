@@ -140,11 +140,11 @@ function clearSvgOverlay(animMs = 0): void {
     svgClearTimeoutId = setTimeout(() => {
       svgClearTimeoutId = null;
       svgOverlay.setAttribute('hidden', '');
-      svgOverlay.innerHTML = DOMPurify.sanitize('');
+      svgOverlay.innerHTML = '';
     }, animMs);
   } else {
     svgOverlay.setAttribute('hidden', '');
-    svgOverlay.innerHTML = DOMPurify.sanitize('');
+    svgOverlay.innerHTML = '';
   }
 }
 
@@ -177,7 +177,7 @@ function renderTrail(state: ConstellationState): void {
 
 function clearAssociationPanel(): void {
   associationPanel.setAttribute('hidden', '');
-  associationPanel.innerHTML = DOMPurify.sanitize('');
+  associationPanel.innerHTML = '';
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────
