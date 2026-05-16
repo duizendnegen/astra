@@ -47,6 +47,9 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'word is required' }) };
     }
     word = body.word.trim().toLowerCase();
+    if (word.length > 100) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'word must be 100 characters or fewer' }) };
+    }
   } catch {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid JSON body' }) };
   }
