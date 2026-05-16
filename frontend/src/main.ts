@@ -11,7 +11,6 @@ import { RESULT_FOV, RESULT_FOV_MOBILE } from './types';
 // Timing constants matching renderer.ts animation parameters
 const RESULT_ANIM_MS = 2000;
 const RESULT_FADE_START = 0.60; // constellation starts fading at 60% of animation
-const LANDING_ANIM_MS = 1500;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const canvas          = document.getElementById('sky') as HTMLCanvasElement;
