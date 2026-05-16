@@ -1,3 +1,4 @@
+import DOMPurify from 'dompurify';
 import { loadCatalogue, loadConstellationLines, loadStarNames } from './catalogue';
 import { init, resize, setConstellation, animateToResult, animateToLanding, setOverlayData, setFeatures, setStarNames, getProjection, buildProjectionForCamera } from './renderer';
 import { buildShareUrl, copyToClipboard, decode } from './share';
@@ -64,8 +65,7 @@ function setupSvgOverlay(
     clearSvgOverlay();
     return;
   }
-  // SVG content comes from our own S3/CDN bucket (trusted source)
-  svgOverlay.innerHTML = prov.svgPath;
+  svgOverlay.innerHTML = DOMPurify.sanitize(prov.svgPath, { USE_PROFILES: { svg: true, svgFilters: true } });
   const svgEl = svgOverlay.querySelector('svg') as SVGSVGElement | null;
   if (!svgEl) { clearSvgOverlay(); return; }
 
@@ -171,7 +171,7 @@ function renderTrail(state: ConstellationState): void {
     html = 'L4 · generated — no icon match';
   }
 
-  associationPanel.innerHTML = html;
+  associationPanel.innerHTML = DOMPurify.sanitize(html);
   associationPanel.removeAttribute('hidden');
 }
 

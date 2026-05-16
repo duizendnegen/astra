@@ -40,6 +40,10 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
     'Access-Control-Allow-Origin': 'https://astra.plusx.black',
   };
 
+  if (event.requestContext?.http?.method === 'GET' && event.rawPath === '/health') {
+    return { statusCode: 200, headers, body: JSON.stringify({ status: 'ok' }) };
+  }
+
   let word: string;
   try {
     const body = JSON.parse(event.body ?? '{}') as { word?: unknown };
@@ -47,6 +51,9 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
       return { statusCode: 400, headers, body: JSON.stringify({ error: 'word is required' }) };
     }
     word = body.word.trim().toLowerCase();
+    if (word.length > 100) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: 'word must be 100 characters or fewer' }) };
+    }
   } catch {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid JSON body' }) };
   }
@@ -82,7 +89,7 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
       await dynamo.send(
         new PutCommand({
           TableName: TABLE_NAME,
-          Item: { word, match: item.match, skeletons: item.skeletons, matchResult: cachedMatchResult },
+          Item: { word, match: item.match, skeletons: item.skeletons, matchResult: cachedMatchResult, ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 3600 },
         }),
       );
       log.info({ word, durationMs: Math.round(performance.now() - t0), cacheHit: true }, 'request complete');
@@ -118,7 +125,7 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
   await dynamo.send(
     new PutCommand({
       TableName: TABLE_NAME,
-      Item: { word, match: result.match, skeletons: result.skeletons, matchResult },
+      Item: { word, match: result.match, skeletons: result.skeletons, matchResult, ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 3600 },
     }),
   );
 
@@ -131,4 +138,4 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
   };
 }
 
-module.exports = { handler };
+export { handler };

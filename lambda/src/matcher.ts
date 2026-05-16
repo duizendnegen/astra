@@ -63,6 +63,8 @@ interface ModelDefaults {
   chamferCap: number;
   skeletonShapeRefine: boolean;
   assignmentAlgorithm: 'greedy' | 'hungarian';
+  phase3Cap?: number;
+  phase2Cap?: number;
 }
 
 interface ResolvedConfig extends ModelDefaults {

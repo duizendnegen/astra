@@ -79,6 +79,7 @@ export class InfraStack extends cdk.Stack {
       partitionKey: { name: 'word', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
     });
 
     // ── OpenRouter API key from SSM Parameter ────────────────────────────
@@ -138,6 +139,7 @@ export class InfraStack extends cdk.Stack {
         ICONS_BUCKET_NAME: iconsBucket.bucketName,
         STARS_PATH: '/var/task/stars.json',
         NODE_ENV: 'production',
+        LOG_LEVEL: 'info',
         PINECONE_INDEX_NAME: 'astra-prod-icons',
         PINECONE_HOST: 'https://astra-prod-icons-ylyik2p.svc.aped-4627-b74a.pinecone.io',
         AWS_LAMBDA_EXEC_WRAPPER: '/opt/otel-handler',
@@ -161,11 +163,27 @@ export class InfraStack extends cdk.Stack {
       },
     });
 
+    // Add throttling to the default stage (escape hatch — L2 HttpApi doesn't expose throttle)
+    const defaultStage = httpApi.defaultStage!.node.defaultChild as apigateway.CfnStage;
+    defaultStage.defaultRouteSettings = {
+      throttlingBurstLimit: 10,
+      throttlingRateLimit: 2,
+    };
+
     httpApi.addRoutes({
       path: '/api/constellation',
       methods: [apigateway.HttpMethod.POST],
       integration: new apigatewayIntegrations.HttpLambdaIntegration(
         'SkeletonIntegration',
+        skeletonFn,
+      ),
+    });
+
+    httpApi.addRoutes({
+      path: '/health',
+      methods: [apigateway.HttpMethod.GET],
+      integration: new apigatewayIntegrations.HttpLambdaIntegration(
+        'HealthIntegration',
         skeletonFn,
       ),
     });
