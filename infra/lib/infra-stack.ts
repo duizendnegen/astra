@@ -161,6 +161,13 @@ export class InfraStack extends cdk.Stack {
       },
     });
 
+    // Add throttling to the default stage (escape hatch — L2 HttpApi doesn't expose throttle)
+    const defaultStage = httpApi.defaultStage!.node.defaultChild as apigateway.CfnStage;
+    defaultStage.defaultRouteSettings = {
+      throttlingBurstLimit: 10,
+      throttlingRateLimit: 2,
+    };
+
     httpApi.addRoutes({
       path: '/api/constellation',
       methods: [apigateway.HttpMethod.POST],
