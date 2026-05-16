@@ -40,6 +40,10 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
     'Access-Control-Allow-Origin': 'https://astra.plusx.black',
   };
 
+  if (event.requestContext?.http?.method === 'GET' && event.rawPath === '/health') {
+    return { statusCode: 200, headers, body: JSON.stringify({ status: 'ok' }) };
+  }
+
   let word: string;
   try {
     const body = JSON.parse(event.body ?? '{}') as { word?: unknown };

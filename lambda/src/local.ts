@@ -36,6 +36,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200);
+    res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
   if (req.method !== 'POST' || (req.url !== '/api/constellation' && req.url !== '/api/skeleton')) {
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'not found' }));

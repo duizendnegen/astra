@@ -177,6 +177,15 @@ export class InfraStack extends cdk.Stack {
       ),
     });
 
+    httpApi.addRoutes({
+      path: '/health',
+      methods: [apigateway.HttpMethod.GET],
+      integration: new apigatewayIntegrations.HttpLambdaIntegration(
+        'HealthIntegration',
+        skeletonFn,
+      ),
+    });
+
     // ── S3 static site bucket (private) ──────────────────────────────────
     const siteBucket = new s3.Bucket(this, 'SiteBucket', {
       bucketName: `astra-site-${this.account}`,
