@@ -89,7 +89,7 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
       await dynamo.send(
         new PutCommand({
           TableName: TABLE_NAME,
-          Item: { word, match: item.match, skeletons: item.skeletons, matchResult: cachedMatchResult },
+          Item: { word, match: item.match, skeletons: item.skeletons, matchResult: cachedMatchResult, ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 3600 },
         }),
       );
       log.info({ word, durationMs: Math.round(performance.now() - t0), cacheHit: true }, 'request complete');
@@ -125,7 +125,7 @@ async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyRe
   await dynamo.send(
     new PutCommand({
       TableName: TABLE_NAME,
-      Item: { word, match: result.match, skeletons: result.skeletons, matchResult },
+      Item: { word, match: result.match, skeletons: result.skeletons, matchResult, ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 3600 },
     }),
   );
 

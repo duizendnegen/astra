@@ -79,6 +79,7 @@ export class InfraStack extends cdk.Stack {
       partitionKey: { name: 'word', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      timeToLiveAttribute: 'ttl',
     });
 
     // ── OpenRouter API key from SSM Parameter ────────────────────────────
