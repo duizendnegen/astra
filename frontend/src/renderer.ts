@@ -262,6 +262,7 @@ export function animateTo(
   onComplete?: () => void,
   fadeStart: number = 0,
   fadeOut: boolean = false,
+  onFrame?: () => void,
 ): void {
   if (animFrame !== null) cancelAnimationFrame(animFrame);
 
@@ -283,6 +284,7 @@ export function animateTo(
 
     projection = buildProjection();
     draw();
+    onFrame?.();
 
     if (t < 1) {
       animFrame = requestAnimationFrame(step);
@@ -343,11 +345,11 @@ export function resetCamera(): void {
   draw();
 }
 
-export function animateToResult(patchRA: number, patchDec: number, onComplete?: () => void): void {
+export function animateToResult(patchRA: number, patchDec: number, onComplete?: () => void, onFrame?: () => void): void {
   const isMobile = canvas.height > canvas.width;
   const fov = isMobile ? RESULT_FOV_MOBILE : RESULT_FOV;
   constellationAlpha = 0;
-  animateTo({ ra: patchRA, dec: patchDec, fov }, 2000, onComplete, RESULT_FADE_START);
+  animateTo({ ra: patchRA, dec: patchDec, fov }, 2000, onComplete, RESULT_FADE_START, false, onFrame);
 }
 
 export function animateToLanding(): void {

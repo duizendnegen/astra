@@ -205,9 +205,8 @@ function showResult(state: ConstellationState): void {
   setupSvgOverlay(state, targetProj, RESULT_ANIM_MS * RESULT_FADE_START);
 
   animateToResult(state.match.patchRA, state.match.patchDec, () => {
-    // Animation done — refresh transform with the now-stable actual projection
     updateSvgTransform();
-  });
+  }, updateSvgTransform);
 
   renderTrail(state);
 }
@@ -222,8 +221,7 @@ function showLanding(): void {
   animateToLanding();
 
   settingsBtn.removeAttribute('hidden');
-  // Fade SVG out in sync with constellation (animateToLanding duration = LANDING_ANIM_MS)
-  clearSvgOverlay(LANDING_ANIM_MS);
+  clearSvgOverlay();
   clearAssociationPanel();
 }
 
