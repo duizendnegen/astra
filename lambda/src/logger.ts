@@ -3,7 +3,7 @@ import pino from 'pino';
 const isProduction = process.env.NODE_ENV === 'production';
 
 const rootLogger = pino(
-  { level: 'debug' },
+  { level: process.env.LOG_LEVEL ?? 'info' },
   isProduction
     ? undefined
     : pino.transport({ target: 'pino-pretty', options: { colorize: true } }),
