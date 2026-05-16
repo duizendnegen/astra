@@ -6,16 +6,18 @@ Enter any word — a person, animal, feeling, place — and Astra finds a real p
 
 ## How it works
 
-1. Your word is sent to a Lambda-backed LLM endpoint, which returns a JSON skeleton (keypoints + edges)
-2. The skeleton is matched to real stars from the HYG catalogue using the Hungarian algorithm
-3. The constellation is rendered on a D3-projected star field, lines drawn between matched stars
-4. The result is encoded into a share URL entirely client-side — no backend needed to replay it
+1. Your word is embedded and searched against ~1,500 Phosphor icon shapes in Pinecone — most concrete words match instantly at this layer
+2. If no confident match, an LLM maps the word to related nouns (synonyms, categories) and re-queries the icon index
+3. In parallel, Gemini generates a black-and-white line drawing of the word, which is traced to a shape outline via Potrace
+4. The matched shape is fitted to real stars from the HYG catalogue using a three-phase algorithm (prescreen → greedy → Hungarian)
+5. The constellation is rendered on a D3-projected star field, lines drawn between matched stars
+6. The result is encoded into a share URL entirely client-side — no backend needed to replay it
 
 ---
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22+
 - Docker (for local development)
 
 ---
@@ -28,7 +30,7 @@ Copy `.env.local.example` to `.env.local` and fill in your `OPENROUTER_API_KEY`,
 docker compose up
 ```
 
-The app runs at `http://localhost:5173`. The API runs on port 3001. Local Pinecone and MinIO services start automatically alongside the API.
+The app runs at `http://localhost:5173`. The API runs on port 3001. Local Pinecone and MinIO services start automatically alongside the API. On first run, the `index-init` service embeds all ~1,500 icon shapes into the local index — this takes a few minutes.
 
 ### Running services individually
 
@@ -52,11 +54,9 @@ cd frontend && npm test
 cd lambda && npm test
 ```
 
----
+### Test harness
 
-## Test harness
-
-The test harness runs the full shape pipeline over a fixed word list and produces an HTML report of constellation thumbnails for visual evaluation.
+The test harness runs the full pipeline over a fixed word list and produces an HTML report of constellation thumbnails for visual evaluation.
 
 ```bash
 cd test-harness && npm install
@@ -88,21 +88,15 @@ node scripts/build-constellation-lines.mjs
 
 ---
 
-## Feature flags
-
-Controlled via URL query params — useful for development and debugging:
-
-| Param           | Effect                                         |
-|-----------------|------------------------------------------------|
-| `?show_lines=1` | Show IAU constellation stick figures           |
-| `?show_stars=1` | Show named star labels (20 brightest stars)    |
-
-Flags can be combined: `?show_lines=1&show_stars=1`
-
----
-
 ## Deployment
 
-Infrastructure is defined in CDK (`infra/`). After the initial setup, all deploys run automatically via GitHub Actions on push to `main` — tests, icon index build, frontend build, and `cdk deploy` in sequence.
+Infrastructure is defined in CDK (`infra/`). First-time setup requires:
 
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for first-time setup instructions.
+- AWS account with CDK bootstrapped (`cd infra && npx cdk bootstrap`)
+- SSM SecureString parameters: `/astra/openrouter-api-key` and `/astra/pinecone-api-key`
+- A Pinecone Serverless index (1536 dimensions, cosine metric, `us-east-1`)
+- Run `scripts/build-index.ts` once to embed all icon shapes and upload SVGs to S3
+- GitHub Actions secrets: `OPENROUTER_API_KEY`, `PINECONE_API_KEY`
+- GitHub Actions variables: `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`, `AWS_READONLY_ROLE_ARN`, `PINECONE_INDEX_NAME`, `ICONS_BUCKET_NAME`
+
+After that, all deploys run automatically via GitHub Actions on push to `main` — tests, icon index build (incremental), frontend build, and `cdk deploy` in sequence.
